@@ -80,7 +80,7 @@ function UsageBar({
       {over80 && (
         <p className="text-xs text-[#B45309] mt-1.5 flex items-center gap-1">
           <AlertCircle size={11} strokeWidth={1.5} />
-          {pct}% used — consider upgrading for more headroom
+          {pct}% used - consider upgrading for more headroom
         </p>
       )}
     </div>
@@ -269,14 +269,14 @@ export default function Billing() {
           <div className="mt-4 flex items-center gap-2.5 px-4 py-3 bg-[#F0FDF4] border border-[#BBF7D0] rounded-md">
             <PartyPopper size={15} strokeWidth={1.5} className="text-[#16A34A] flex-shrink-0" />
             <p className="text-[13px] text-[#15803D] font-medium">
-              You're now on the {upgradedPlan ? upgradedPlan.charAt(0).toUpperCase() + upgradedPlan.slice(1) : 'new'} plan — thank you!
+              You're now on the {upgradedPlan ? upgradedPlan.charAt(0).toUpperCase() + upgradedPlan.slice(1) : 'new'} plan - thank you!
             </p>
           </div>
         )}
         {stripeCanceled && (
           <div className="mt-4 flex items-center gap-2.5 px-4 py-3 bg-[#FFF7ED] border border-[#FED7AA] rounded-md">
             <AlertCircle size={15} strokeWidth={1.5} className="text-[#C2410C] flex-shrink-0" />
-            <p className="text-[13px] text-[#C2410C]">Checkout was canceled — your plan has not changed.</p>
+            <p className="text-[13px] text-[#C2410C]">Checkout was canceled - your plan has not changed.</p>
           </div>
         )}
         {errorMsg && (

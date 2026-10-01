@@ -1,8 +1,8 @@
 /**
- * tokenStore — central localStorage token management.
+ * tokenStore - central localStorage token management.
  *
  * All auth state lives here.  The apiClient interceptors read/write here.
- * No Supabase JS client is imported anywhere — all auth proxies through FastAPI.
+ * No Supabase JS client is imported anywhere - all auth proxies through FastAPI.
  */
 
 const ACCESS_KEY  = 'vidora_access_token'
@@ -41,7 +41,7 @@ export const tokenStore = {
     localStorage.setItem(USER_KEY, JSON.stringify(user))
   },
 
-  /** Clear everything — called on logout or after a failed refresh. */
+  /** Clear everything - called on logout or after a failed refresh. */
   clear: () => {
     localStorage.removeItem(ACCESS_KEY)
     localStorage.removeItem(REFRESH_KEY)

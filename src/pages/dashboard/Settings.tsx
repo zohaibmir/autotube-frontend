@@ -35,7 +35,7 @@ const SERVICES: Array<{
 }> = [
   {
     id: 'anthropic',
-    name: 'Anthropic (Claude)',
+    name: 'Anthropic',
     description: 'Script writing, SEO, AI insights',
     docUrl: 'https://console.anthropic.com/account/keys',
     placeholder: 'sk-ant-api03-...',
@@ -212,7 +212,7 @@ function APIKeysTab() {
   const saveMutation   = useByokSave()
   const removeMutation = useByokRemove()
 
-  // Only count the services shown in this UI — `status` also includes
+  // Only count the services shown in this UI - `status` also includes
   // `kling_secret` (a paired credential, not its own visible row), which was
   // previously included in this count and could make it appear that all
   // services were connected even when one (e.g. Mureka) was actually "Not set".
@@ -223,7 +223,7 @@ function APIKeysTab() {
       await saveMutation.mutateAsync({ service: serviceId, key })
       toast.success(`${SERVICES.find(s => s.id === serviceId)?.name} key saved`)
     } catch {
-      toast.error('Failed to save — check the key is valid')
+      toast.error('Failed to save - check the key is valid')
       throw new Error('save failed')
     }
   }
@@ -276,21 +276,34 @@ function APIKeysTab() {
 }
 
 // ─── Integrations Tab ─────────────────────────────────────────────────────────
+// This tab used to have fake "Connect"/"Disconnect" buttons that only toggled
+// local React state with zero backend wiring - clicking "Disconnect" on
+// Supabase (which the entire app runs on) did nothing but looked like it
+// worked. These are platform-level infrastructure integrations, not something
+// an end user can toggle from Settings, so this is now a read-only status
+// display. YouTube's status reflects whether at least one channel currently
+// has a working OAuth token.
 
-const INTEGRATIONS = [
-  { id: 'youtube',  name: 'YouTube',       description: 'Upload and manage videos',  connected: true  },
-  { id: 'r2',       name: 'Cloudflare R2', description: 'Video storage and CDN',     connected: false },
-  { id: 'supabase', name: 'Supabase',      description: 'Auth and database',         connected: true  },
+const STATIC_INTEGRATIONS = [
+  { id: 'r2',       name: 'Cloudflare R2', description: 'Video storage and CDN' },
+  { id: 'supabase', name: 'Supabase',      description: 'Auth and database' },
 ]
 
 function IntegrationsTab() {
-  const [state, setState] = useState(INTEGRATIONS)
+  const { data: channels = [] } = useChannels()
+  const youtubeConnected = (channels as any[]).some((ch) => ch.auth_status === 'ok')
+
+  const rows = [
+    { id: 'youtube', name: 'YouTube', description: 'Upload and manage videos', connected: youtubeConnected },
+    ...STATIC_INTEGRATIONS.map((i) => ({ ...i, connected: true })),
+  ]
+
   return (
     <div>
       <h2 className="text-[15px] font-semibold text-[#0A0A0A] mb-1">Integrations</h2>
-      <p className="text-[12px] text-[#525252] mb-5">Connected platforms and infrastructure.</p>
+      <p className="text-[12px] text-[#525252] mb-5">Connected platforms and infrastructure (read-only status).</p>
       <div className="border border-[#E5E5E5] rounded-lg overflow-hidden bg-white">
-        {state.map((int) => (
+        {rows.map((int) => (
           <div key={int.id} className="flex items-center gap-4 px-5 py-3.5 border-b border-[#E5E5E5] last:border-b-0">
             <span className={`w-2 h-2 rounded-full flex-shrink-0 ${int.connected ? 'bg-[#16A34A]' : 'bg-[#D4D4D4]'}`} />
             <div className="flex-1">
@@ -300,16 +313,15 @@ function IntegrationsTab() {
             <span className={`text-[11px] font-medium ${int.connected ? 'text-[#16A34A]' : 'text-[#A3A3A3]'}`}>
               {int.connected ? 'Connected' : 'Not connected'}
             </span>
-            <button
-              onClick={() => setState(state.map((s) => s.id === int.id ? { ...s, connected: !s.connected } : s))}
-              className={`text-[11px] font-medium h-7 px-2.5 rounded border transition-colors ${
-                int.connected
-                  ? 'border-[#E5E5E5] text-[#525252] hover:border-[#DC2626] hover:text-[#DC2626]'
-                  : 'border-[#0A0A0A] text-[#0A0A0A] hover:bg-[#0A0A0A] hover:text-white'
-              }`}
-            >
-              {int.connected ? 'Disconnect' : 'Connect'}
-            </button>
+            {int.id === 'youtube' && !int.connected && (
+              <a href="#" onClick={(e) => {
+                e.preventDefault()
+                const channelsLink = document.querySelector('a[href="/app/channels"]') as HTMLAnchorElement | null
+                if (channelsLink) channelsLink.click()
+              }} className="text-[11px] font-medium h-7 px-2.5 rounded border border-[#0A0A0A] text-[#0A0A0A] hover:bg-[#0A0A0A] hover:text-white transition-colors flex items-center">
+                Manage in Channels →
+              </a>
+            )}
           </div>
         ))}
       </div>
@@ -445,7 +457,7 @@ const SOCIAL_PLATFORMS: SocialPlatformDef[] = [
   {
     id: 'twitter',
     label: 'X (Twitter)',
-    subtitle: 'Coming soon — video posts',
+    subtitle: 'Coming soon - video posts',
     hint: 'https://developer.x.com/en/docs/twitter-api',
     fields: [],
     comingSoon: true,
@@ -453,7 +465,7 @@ const SOCIAL_PLATFORMS: SocialPlatformDef[] = [
   {
     id: 'pinterest',
     label: 'Pinterest',
-    subtitle: 'Coming soon — video pins',
+    subtitle: 'Coming soon - video pins',
     hint: 'https://developers.pinterest.com/docs/',
     fields: [],
     comingSoon: true,
@@ -716,7 +728,7 @@ function SocialAccountsTab() {
       )}
 
       <p className="text-[11px] text-[#A3A3A3] mt-4">
-        Credentials are stored encrypted (AES-256-GCM). Reddit posts YouTube links only — video upload coming in a future update.
+        Credentials are stored encrypted (AES-256-GCM). Reddit posts YouTube links only - video upload coming in a future update.
       </p>
     </div>
   )
@@ -727,6 +739,7 @@ function SocialAccountsTab() {
 function SchedulerTab() {
   const toast = useToast()
   const queryClient = useQueryClient()
+  const { data: channels = [] } = useChannels()
 
   const { data: statusData, isLoading: statusLoading, refetch } = useQuery({
     queryKey: ['scheduler-status'],
@@ -741,12 +754,46 @@ function SchedulerTab() {
     staleTime: 30_000,
   })
 
+  // Cadence settings - same underlying store as the Automation tab (.env-backed).
+  const { data: envData, isLoading: cadenceLoading } = useQuery({
+    queryKey: ['automation-settings'],
+    queryFn: () => automationApi.get(),
+    staleTime: 60_000,
+  })
+  const [publishTime, setPublishTime] = useState('14:00')
+  const [cadenceChannel, setCadenceChannel] = useState('')
+  const [cadenceShortsCount, setCadenceShortsCount] = useState(1)
+  const [cadenceDirty, setCadenceDirty] = useState(false)
+
+  React.useEffect(() => {
+    if (envData) {
+      setPublishTime(envData.SCHEDULER_PUBLISH_TIME ?? envData.schedulerPublishTime ?? '14:00')
+      setCadenceChannel(envData.SCHEDULER_CHANNEL ?? envData.schedulerChannel ?? '')
+      const sc = envData.SCHEDULER_SHORTS_COUNT ?? envData.schedulerShortsCount
+      setCadenceShortsCount(sc != null ? Number(sc) : 1)
+    }
+  }, [envData])
+
+  const saveCadence = useMutation({
+    mutationFn: () => automationApi.save({
+      schedulerPublishTime: publishTime,
+      schedulerChannel: cadenceChannel,
+      schedulerShortsCount: cadenceShortsCount,
+    }),
+    onSuccess: () => {
+      toast.success('Cadence saved - restart the scheduler process to apply')
+      setCadenceDirty(false)
+      queryClient.invalidateQueries({ queryKey: ['automation-settings'] })
+    },
+    onError: () => toast.error('Failed to save cadence'),
+  })
+
   const runNext = useMutation({
     mutationFn: () => schedulerApi.runNext(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scheduler-status'] })
       queryClient.invalidateQueries({ queryKey: ['scheduler-history'] })
-      toast.success('Job queued — pipeline starting now')
+      toast.success('Job queued - pipeline starting now')
     },
     onError: () => toast.error('Failed to run next job'),
   })
@@ -756,7 +803,7 @@ function SchedulerTab() {
     onSuccess: (res: any) => {
       queryClient.invalidateQueries({ queryKey: ['scheduler-status'] })
       queryClient.invalidateQueries({ queryKey: ['scheduler-history'] })
-      toast.success(res?.message ?? 'Test run triggered — check Jobs for progress')
+      toast.success(res?.message ?? 'Test run triggered - check Jobs for progress')
     },
     onError: () => toast.error('Test run failed'),
   })
@@ -775,6 +822,67 @@ function SchedulerTab() {
       <p className="text-[12px] text-[#525252] mb-5">
         Automated queue processing. The scheduler dequeues topics and runs the pipeline on a cadence.
       </p>
+
+      {/* Cadence editor */}
+      <div className="border border-[#E5E5E5] rounded-md bg-white mb-5 overflow-hidden">
+        <div className="px-5 py-2.5 border-b border-[#E5E5E5] bg-[#FAFAFA]">
+          <p className="text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest">Cadence</p>
+        </div>
+        {cadenceLoading ? (
+          <div className="px-5 py-4"><div className="w-40 h-3 bg-[#F5F5F5] rounded animate-pulse" /></div>
+        ) : (
+          <div className="px-5 py-4 space-y-3.5">
+            <div className="flex items-end gap-3 flex-wrap">
+              <div>
+                <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Publish time (UTC)</label>
+                <input
+                  type="time"
+                  value={publishTime}
+                  onChange={(e) => { setPublishTime(e.target.value); setCadenceDirty(true) }}
+                  className="h-8 px-3 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Channel</label>
+                <select
+                  value={cadenceChannel}
+                  onChange={(e) => { setCadenceChannel(e.target.value); setCadenceDirty(true) }}
+                  className="h-8 pl-3 pr-8 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
+                >
+                  <option value="">Default (any pending topic)</option>
+                  {(channels as any[]).map((ch: any) => (
+                    <option key={ch.slug} value={ch.slug}>{ch.name || ch.slug}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Shorts per run</label>
+                <select
+                  value={cadenceShortsCount}
+                  onChange={(e) => { setCadenceShortsCount(Number(e.target.value)); setCadenceDirty(true) }}
+                  className="h-8 pl-3 pr-8 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
+                >
+                  {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+              <button
+                onClick={() => saveCadence.mutate()}
+                disabled={!cadenceDirty || saveCadence.isPending}
+                className="h-8 px-4 text-[12px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] disabled:opacity-40 transition-colors flex items-center gap-1.5"
+              >
+                {saveCadence.isPending && <Loader2 size={11} strokeWidth={1.5} className="animate-spin" />}
+                Save
+              </button>
+            </div>
+            <p className="text-[11px] text-[#A3A3A3]">
+              Writes to the server <code className="text-[11px] bg-[#F5F5F5] px-1 rounded">.env</code> file. The standalone{' '}
+              <code className="text-[11px] bg-[#F5F5F5] px-1 rounded">scheduler.py</code> process reads these once at startup —
+              restart it for cadence changes to take effect. "Test Run" and "Run Next" below always use the live value immediately.
+            </p>
+          </div>
+        )}
+      </div>
+
 
       {/* Status row */}
       <div className="border border-[#E5E5E5] rounded-md bg-white divide-y divide-[#F5F5F5] mb-5">
@@ -1015,8 +1123,8 @@ function AutomationTab() {
             <option value="extract">Extract from main video (legacy)</option>
           </select>
           <p className="text-[11px] text-[#A3A3A3] mt-1.5">
-            <strong>Separate</strong> — Claude writes a purpose-built 60-second Short script on the same topic. Better hook, native vertical content.&nbsp;
-            <strong>Extract</strong> — clips are sliced from the main video's segments. No extra AI cost, but content was written for long-form.
+            <strong>Separate</strong> - AI writes a purpose-built 60-second Short script on the same topic. Better hook, native vertical content.&nbsp;
+            <strong>Extract</strong> - clips are sliced from the main video's segments. No extra AI cost, but content was written for long-form.
           </p>
         </div>
         {!!values.redditEnabled && (
@@ -1222,7 +1330,7 @@ function AccountTab() {
   const navigate = useNavigate()
   const qc = useQueryClient()
 
-  // logout() only clears store/token state — it never redirects. Without this,
+  // logout() only clears store/token state - it never redirects. Without this,
   // "Sign out of this device" and account deletion left the user stranded on a
   // fully-rendered but unauthenticated Settings page instead of returning to /login.
   const handleSignOut = async () => {
@@ -1424,7 +1532,7 @@ function AccountTab() {
         {showDeleteZone && (
           <div className="px-5 pb-5 bg-[#FFF1F2] space-y-3 border-t border-[#FECDD3]">
             <p className="text-[12px] text-[#BE123C] pt-4">
-              This permanently removes your Vidora account data. Your Supabase auth record will remain — contact support if you need it fully deleted.
+              This permanently removes your Vidora account data. Your Supabase auth record will remain - contact support if you need it fully deleted.
             </p>
             <label className="block text-[11px] text-[#BE123C] font-semibold mb-1">
               Type <code className="bg-white px-1 rounded border border-[#FECDD3]">DELETE</code> to confirm
@@ -1822,10 +1930,13 @@ export default function Settings() {
       </div>
 
       {/* Underline tab bar */}
-      <div className="flex border-b border-[#E5E5E5] mb-6">
+      <div role="tablist" aria-label="Settings sections" className="flex border-b border-[#E5E5E5] mb-6">
         {TABS.map((tab) => (
           <button
             key={tab.id}
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            data-settings-tab={tab.id}
             onClick={() => setActiveTab(tab.id)}
             className={[
               'mr-6 pb-3 text-[13px] transition-colors border-b-2',

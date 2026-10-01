@@ -10,6 +10,9 @@ import PricingPage from './pages/PricingPage'
 import AboutPage from './pages/AboutPage'
 import ContactPage from './pages/ContactPage'
 import FAQPage from './pages/FAQPage'
+import SeoAnalyzerPage from './pages/SeoAnalyzerPage'
+import BlogListPage from './pages/BlogListPage'
+import BlogPostPage from './pages/BlogPostPage'
 
 // Auth Pages
 import LoginPage from './pages/auth/LoginPage'
@@ -36,6 +39,9 @@ function App() {
         <Route path="/about" element={<AboutPage />} />
         <Route path="/contact" element={<ContactPage />} />
         <Route path="/faq" element={<FAQPage />} />
+        <Route path="/blog" element={<BlogListPage />} />
+        <Route path="/blog/:slug" element={<BlogPostPage />} />
+        <Route path="/tools/seo-analyzer" element={<SeoAnalyzerPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
         <Route path="/app/*" element={

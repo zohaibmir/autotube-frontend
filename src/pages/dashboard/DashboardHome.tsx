@@ -31,7 +31,10 @@ function topicLabel(job: any) {
   return job.topic?.replace(/^\[Short\]\s*/i, '') || job.job_id || '—'
 }
 function isShortJob(job: any) {
-  return /^\[short\]/i.test(job.topic || '')
+  // Matches "[Short] ..." as well as prefixed variants like
+  // "Shorts pipeline rerun: [Short] ..." (job.topic gets a rerun prefix
+  // prepended, which used to break the anchored ^[short] check below).
+  return /\[short\]/i.test(job.topic || '')
 }
 
 // ── Onboarding checklist ───────────────────────────────────────────────────────────
@@ -256,7 +259,7 @@ export default function DashboardHome() {
         </Link>
       </div>
 
-      {/* Onboarding checklist — only shown until dismissed or all complete */}
+      {/* Onboarding checklist - only shown until dismissed or all complete */}
       {showChecklist && (
         <OnboardingChecklist
           steps={checklistSteps}
@@ -269,7 +272,7 @@ export default function DashboardHome() {
         <div className="bg-[#F0FDF4] border border-[#BBF7D0] rounded-md px-5 py-4 flex items-start gap-3">
           <PartyPopper size={18} strokeWidth={1.5} className="text-[#16A34A] flex-shrink-0 mt-0.5" />
           <div className="flex-1">
-            <p className="text-[13px] font-semibold text-[#15803D]">First video published — nice work!</p>
+            <p className="text-[13px] font-semibold text-[#15803D]">First video published - nice work!</p>
             <p className="text-[12px] text-[#166534] mt-0.5">
               Your automation pipeline is running. Keep the queue full to grow your channel consistently.
             </p>

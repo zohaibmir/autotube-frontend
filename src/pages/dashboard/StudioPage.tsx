@@ -38,7 +38,7 @@ interface ClipRow {
   label: string
 }
 
-type ActiveTab = 'upload' | 'extract'
+type ActiveTab = 'upload' | 'extract' | 'import'
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -94,6 +94,13 @@ export default function StudioPage() {
   const [extracting, setExtracting] = useState(false)
   const [uploadingShorts, setUploadingShorts] = useState(false)
   const [shortsResult, setShortsResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
+  // Import & Clip tab state
+  const [importUrl, setImportUrl] = useState('')
+  const [importAnalysis, setImportAnalysis] = useState<any>(null)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [selectedClips, setSelectedClips] = useState<Set<number>>(new Set())
+  const [importExtracting, setImportExtracting] = useState(false)
 
   // Data queries
   const { data: videosData, isFetching: videosLoading, refetch: refetchVideos } = useQuery({
@@ -224,6 +231,56 @@ export default function StudioPage() {
     }
   }
 
+  // ── Import & Clip handlers ───────────────────────────────────────────────
+
+  async function handleAnalyzeImport() {
+    if (!importUrl.trim()) return
+    setAnalyzing(true)
+    setImportAnalysis(null)
+    setSelectedClips(new Set())
+    setExtractResult(null)
+    setShortsResult(null)
+    try {
+      const result = await studioApi.importAnalyze(importUrl.trim())
+      setImportAnalysis(result)
+      if (result.ok && result.suggested_clips?.length) {
+        setSelectedClips(new Set(result.suggested_clips.map((_: any, i: number) => i)))
+      }
+    } catch (e: any) {
+      setImportAnalysis({ ok: false, error: e?.response?.data?.detail ?? e?.message ?? 'Analysis failed' })
+    } finally {
+      setAnalyzing(false)
+    }
+  }
+
+  function toggleClipSelection(i: number) {
+    setSelectedClips(prev => {
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+  }
+
+  async function handleExtractImportedClips() {
+    if (!importAnalysis?.ok || selectedClips.size === 0) return
+    setImportExtracting(true)
+    setExtractResult(null)
+    setShortsResult(null)
+    try {
+      const clips = (importAnalysis.suggested_clips as any[])
+        .filter((_, i) => selectedClips.has(i))
+        .map((c) => ({ start: c.start, end: c.end, label: c.label }))
+      const result = await studioApi.importExtract(importUrl.trim(), clips)
+      setExtractResult(result)
+      if (result.ok) refetchVideos()
+    } catch (e: any) {
+      setExtractResult({ ok: false, error: e?.response?.data?.detail ?? e?.message ?? 'Extract failed' })
+    } finally {
+      setImportExtracting(false)
+    }
+  }
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -306,14 +363,33 @@ export default function StudioPage() {
 
       {/* ── Right: Main content ────────────────────────────────────────────── */}
       <main className="flex-1 overflow-y-auto p-6">
-        {!selectedPath ? (
-          <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
+        <div className="max-w-2xl">
+          {/* Tab nav - always visible; Import & Clip works without a local video selected */}
+          <div className="flex gap-6 border-b border-[#E5E5E5] mb-5">
+            {(['upload', 'extract', 'import'] as ActiveTab[]).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={[
+                  'pb-2.5 text-[13px] font-medium transition-colors',
+                  activeTab === tab
+                    ? 'text-[#0A0A0A] border-b-2 border-[#0A0A0A]'
+                    : 'text-[#A3A3A3] hover:text-[#525252]',
+                ].join(' ')}
+              >
+                {tab === 'upload' ? 'Upload to YouTube' : tab === 'extract' ? 'Extract Clips' : 'Import & Clip'}
+              </button>
+            ))}
+          </div>
+
+        {activeTab !== 'import' && !selectedPath ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-center py-16">
             <Film size={32} strokeWidth={1.5} className="text-[#D4D4D4]" />
             <p className="text-[14px] text-[#525252]">Select a video from the list</p>
             <p className="text-[12px] text-[#A3A3A3]">Browse your local output/ files on the left</p>
           </div>
-        ) : (
-          <div className="max-w-2xl">
+        ) : activeTab !== 'import' ? (
+          <div>
 
             {/* Video metadata row */}
             <div className="mb-5">
@@ -342,24 +418,6 @@ export default function StudioPage() {
               ) : info && !info.ok ? (
                 <p className="text-[12px] text-red-600">{info.error}</p>
               ) : null}
-            </div>
-
-            {/* Tab nav */}
-            <div className="flex gap-6 border-b border-[#E5E5E5] mb-5">
-              {(['upload', 'extract'] as ActiveTab[]).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  className={[
-                    'pb-2.5 text-[13px] font-medium transition-colors capitalize',
-                    activeTab === tab
-                      ? 'text-[#0A0A0A] border-b-2 border-[#0A0A0A]'
-                      : 'text-[#A3A3A3] hover:text-[#525252]',
-                  ].join(' ')}
-                >
-                  {tab === 'upload' ? 'Upload to YouTube' : 'Extract Clips'}
-                </button>
-              ))}
             </div>
 
             {/* ── Upload tab ──────────────────────────────────────────────── */}
@@ -582,7 +640,125 @@ export default function StudioPage() {
             )}
 
           </div>
+        ) : (
+          <div>
+            {/* ── Import & Clip tab ──────────────────────────────────────── */}
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-medium text-[#A3A3A3] uppercase tracking-wide mb-1.5">
+                  YouTube URL
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={importUrl}
+                    onChange={e => setImportUrl(e.target.value)}
+                    placeholder="https://www.youtube.com/watch?v=..."
+                    className="flex-1 h-9 px-3 text-[13px] text-[#0A0A0A] bg-white border border-[#E5E5E5] rounded-md focus:outline-none focus:border-[#0A0A0A] transition-colors"
+                  />
+                  <button
+                    onClick={handleAnalyzeImport}
+                    disabled={analyzing || !importUrl.trim()}
+                    className="flex items-center gap-2 h-9 px-4 bg-[#0A0A0A] text-white text-[13px] font-medium rounded-md hover:bg-[#262626] disabled:opacity-40 transition-colors whitespace-nowrap"
+                  >
+                    {analyzing
+                      ? <><Loader2 size={13} strokeWidth={1.5} className="animate-spin" /> Analyzing...</>
+                      : <><Sparkles size={13} strokeWidth={1.5} /> Analyze</>
+                    }
+                  </button>
+                </div>
+                <p className="text-[11px] text-[#A3A3A3] mt-1.5">
+                  Paste any public YouTube video - we'll read its real captions and suggest the best moments to clip.
+                  Needs existing captions (auto or uploaded); doesn't transcribe audio itself. Max 10/hour, 60 min video length.
+                </p>
+              </div>
+
+              {importAnalysis && !importAnalysis.ok && (
+                <StatusMsg type="error" text={importAnalysis.error ?? 'Analysis failed'} />
+              )}
+
+              {importAnalysis?.ok && (
+                <div>
+                  <p className="text-[13px] font-medium text-[#0A0A0A] mb-1 truncate">{importAnalysis.title}</p>
+                  <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-wide mb-2 mt-3">
+                    Suggested clips - pick which to extract
+                  </p>
+                  <div className="border border-[#E5E5E5] rounded-md divide-y divide-[#E5E5E5]">
+                    {(importAnalysis.suggested_clips as any[]).map((c, i) => (
+                      <label key={i} className="flex items-start gap-3 px-3 py-2.5 cursor-pointer hover:bg-[#FAFAFA] transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={selectedClips.has(i)}
+                          onChange={() => toggleClipSelection(i)}
+                          className="mt-1"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[13px] font-medium text-[#0A0A0A]">{c.label}</span>
+                            <span className="text-[11px] text-[#A3A3A3]">{Math.round(c.start)}s–{Math.round(c.end)}s</span>
+                          </div>
+                          <p className="text-[12px] text-[#525252] mt-0.5">{c.reason}</p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={handleExtractImportedClips}
+                    disabled={importExtracting || selectedClips.size === 0}
+                    className="mt-3 flex items-center gap-2 h-9 px-4 bg-[#0A0A0A] text-white text-[13px] font-medium rounded-md hover:bg-[#262626] disabled:opacity-40 transition-colors"
+                  >
+                    {importExtracting
+                      ? <><Loader2 size={13} strokeWidth={1.5} className="animate-spin" /> Downloading & extracting...</>
+                      : <><Scissors size={13} strokeWidth={1.5} /> Extract Selected ({selectedClips.size})</>
+                    }
+                  </button>
+                </div>
+              )}
+
+              {/* Extracted clips result - same shape/flow as the manual Extract tab */}
+              {extractResult && (
+                <div className="mt-4">
+                  {extractResult.ok === false ? (
+                    <StatusMsg type="error" text={extractResult.error ?? 'Extract failed'} />
+                  ) : (
+                    <div>
+                      <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-wide mb-2">
+                        Extracted Clips
+                      </p>
+                      <div className="border border-[#E5E5E5] rounded-md overflow-hidden">
+                        {(extractResult.clips as any[]).map((clip, i) => (
+                          <div
+                            key={i}
+                            className={`flex items-center justify-between px-3 py-2 text-[13px] ${
+                              i !== 0 ? 'border-t border-[#E5E5E5]' : ''
+                            }`}
+                          >
+                            <span className="text-[#0A0A0A] font-medium">{clip.label}</span>
+                            {clip.error ? (
+                              <span className="text-[12px] text-red-600">{clip.error}</span>
+                            ) : (
+                              <div className="flex items-center gap-3">
+                                <span className="text-[12px] text-[#A3A3A3]">{clip.duration}s</span>
+                                <span className="text-[12px] text-[#A3A3A3]">{clip.size_mb} MB</span>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      <p className="text-[11px] text-[#A3A3A3] mt-2">
+                        Clips saved locally - switch to the "Upload to YouTube" or "Extract Clips" tab and select
+                        one from the list on the left to upload it.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         )}
+        </div>
       </main>
     </div>
   )

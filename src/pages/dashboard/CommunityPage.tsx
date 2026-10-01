@@ -287,7 +287,7 @@ export default function CommunityPage() {
           {/* Context */}
           <div>
             <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">
-              Context <span className="font-normal normal-case tracking-normal">(optional — paste script excerpt or description)</span>
+              Context <span className="font-normal normal-case tracking-normal">(optional - paste script excerpt or description)</span>
             </label>
             <textarea
               value={genContext}
@@ -360,7 +360,7 @@ export default function CommunityPage() {
                 )}
                 <span className="ml-auto flex items-center gap-1 text-[10px] text-[#A3A3A3]">
                   <Info size={10} strokeWidth={1.5} />
-                  YouTube API doesn't support auto-posting — copy and paste into YouTube Studio
+                  YouTube API doesn't support auto-posting - copy and paste into YouTube Studio
                 </span>
               </div>
             </div>

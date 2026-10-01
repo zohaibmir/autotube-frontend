@@ -27,12 +27,10 @@ test.describe('Queue', () => {
   })
 
   test('existing queue items are displayed', async ({ page }) => {
-    // Should show either queue items or an empty state message
-    const items    = page.locator('[class*="queue"], [class*="drag"], [class*="row"]')
-    const empty    = page.locator('text=/empty|no topics|get started/i')
-    const hasItems = await items.count() > 0
-    const hasEmpty = await empty.isVisible().catch(() => false)
-    expect(hasItems || hasEmpty).toBe(true)
+    // Should show either queue rows (each has a Remove control) or an empty state
+    const rows     = page.getByRole('button', { name: 'Remove from queue' })
+    const empty    = page.getByText(/queue is empty/i)
+    await expect(rows.first().or(empty)).toBeVisible({ timeout: 8000 })
   })
 
   test('can add a topic via UI form', async ({ page }) => {

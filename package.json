@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "sitemap": "node scripts/generate-sitemap.mjs",
+    "predev": "npm run sitemap",
     "dev": "vite",
+    "prebuild": "npm run sitemap",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
@@ -29,6 +32,7 @@
     "lucide-react": "^0.294.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
+    "react-helmet-async": "^3.0.0",
     "react-hook-form": "^7.48.0",
     "react-router-dom": "^6.20.0",
     "terser": "^5.48.0",

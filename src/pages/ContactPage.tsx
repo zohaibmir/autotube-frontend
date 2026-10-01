@@ -1,10 +1,11 @@
 import React, { useState } from 'react'
 import Navbar from '@components/Navbar'
 import Footer from '@components/Footer'
+import SEO from '@components/SEO'
 import { Check } from 'lucide-react'
 
 const contacts = [
-  { label: 'Email', value: 'support@ytautomation.io', note: 'We read every message' },
+  { label: 'Email', value: 'support@channelpilot.io', note: 'We read every message' },
   { label: 'Response time (Free)', value: 'Within 48 hours', note: '' },
   { label: 'Response time (Pro)', value: 'Within 24 hours', note: '' },
   { label: 'Response time (Enterprise)', value: 'Within 4 hours', note: 'Dedicated account manager' },
@@ -26,6 +27,11 @@ export default function ContactPage() {
   return (
     <div className="min-h-screen bg-white flex flex-col">
       <Navbar />
+      <SEO
+        title="Contact"
+        description="Questions, feedback, or a bug report? Reach the Channelpilot team - we respond to every message, with tiered response times by plan."
+        path="/contact"
+      />
 
       {/* Hero */}
       <section className="pt-28 pb-20 px-6 border-b border-gray-100">

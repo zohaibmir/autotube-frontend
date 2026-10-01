@@ -2,19 +2,20 @@ import React from 'react'
 import { Link } from 'react-router-dom'
 import Navbar from '@components/Navbar'
 import Footer from '@components/Footer'
+import SEO, { SITE_NAME, SITE_URL } from '@components/SEO'
 import { ArrowRight, Check } from 'lucide-react'
 
 const steps = [
   { num: '01', title: 'Enter a topic', description: 'Type any topic or keyword. The AI researches, outlines, and writes a full script for your channel.' },
-  { num: '02', title: 'Pipeline runs', description: 'Script, voiceover, background music, visuals, and thumbnail are generated automatically — no editing needed.' },
+  { num: '02', title: 'Pipeline runs', description: 'Script, voiceover, background music, visuals, and thumbnail are generated automatically - no editing needed.' },
   { num: '03', title: 'Review & publish', description: 'Preview the finished video, make any tweaks, then publish to YouTube with one click.' },
 ]
 
 const features = [
-  { title: 'AI Script Generation', description: 'Engaging scripts tuned to your niche, tone, and audience — generated in seconds.' },
+  { title: 'AI Script Generation', description: 'Engaging scripts tuned to your niche, tone, and audience - generated in seconds.' },
   { title: 'Automatic Media Pipeline', description: 'Voiceover, music, visuals, and thumbnail created without touching a timeline.' },
   { title: 'Multi-Channel Publishing', description: 'Manage unlimited channels and schedule posts across YouTube, Instagram, and TikTok.' },
-  { title: 'Analytics Dashboard', description: 'Track views, watch time, and revenue across all channels in one unified view.' },
+  { title: 'AI Growth Coach', description: 'Not just charts - AI reviews your real retention, traffic sources, and publish timing and tells you exactly what to fix next.' },
   { title: 'Queue Management', description: 'Batch-schedule weeks of content in advance. The scheduler handles the rest.' },
   { title: 'Social Distribution', description: 'Automatically cut Shorts and Reels from every video and post to every platform.' },
 ]
@@ -35,18 +36,34 @@ export default function HomePage() {
   return (
     <div className="min-h-screen bg-white flex flex-col">
       <Navbar />
+      <SEO
+        title="Channelpilot - AI YouTube Automation That Actually Grows Your Channel"
+        description="Turn one topic into a fully produced, multi-platform video - script, voiceover, visuals, and upload - handled by AI. Real retention analytics, traffic-source breakdowns, and best-time-to-publish guidance included."
+        path="/"
+        noSuffix
+        jsonLd={{
+          '@context': 'https://schema.org',
+          '@type': 'SoftwareApplication',
+          name: SITE_NAME,
+          url: SITE_URL,
+          applicationCategory: 'BusinessApplication',
+          operatingSystem: 'Web',
+          offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+          description: 'AI-powered YouTube automation platform: script, voiceover, visuals, and multi-platform upload handled end-to-end, with retention and growth analytics.',
+        }}
+      />
 
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
       <section className="pt-28 pb-24 px-6 border-b border-gray-100">
         <div className="max-w-3xl mx-auto">
           <p className="text-sky-500 font-semibold text-sm uppercase tracking-widest mb-5">
-            AI-Powered YouTube Automation
+            Channelpilot · AI-Powered YouTube Automation
           </p>
           <h1 className="text-5xl sm:text-6xl font-bold text-navy-600 leading-[1.1] mb-6">
             Publish more.<br />Work less.
           </h1>
           <p className="text-xl text-gray-500 leading-relaxed mb-10 max-w-xl">
-            From script to upload — every step of the video pipeline handled by AI, so you focus on building your audience.
+            From script to upload - every step of the video pipeline handled by AI, so you focus on building your audience.
           </p>
           <div className="flex flex-col sm:flex-row gap-3">
             <Link to="/signup" className="btn-primary text-base px-8 py-3">
@@ -57,6 +74,22 @@ export default function HomePage() {
             </Link>
           </div>
           <p className="text-xs text-gray-400 mt-5">No credit card · Cancel anytime</p>
+        </div>
+      </section>
+
+      {/* ── Trust strip ──────────────────────────────────────────────────── */}
+      <section className="py-10 px-6 border-b border-gray-100 bg-gray-50">
+        <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-6">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest whitespace-nowrap">
+            Publishing to
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-x-10 gap-y-3 text-gray-400 font-semibold text-sm">
+            <span>YouTube</span>
+            <span>YouTube Shorts</span>
+            <span>Instagram Reels</span>
+            <span>TikTok</span>
+            <span>Facebook Reels</span>
+          </div>
         </div>
       </section>
 
@@ -89,7 +122,7 @@ export default function HomePage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-gray-200 rounded-xl overflow-hidden border border-gray-200">
             {features.map((f) => (
               <div key={f.title} className="bg-white p-8 hover:bg-gray-50 transition-colors">
-                <h3 className="font-semibold text-navy-600 mb-2">{f.title}</h3>
+                <h3 className="text-base font-semibold text-navy-600 mb-2">{f.title}</h3>
                 <p className="text-gray-500 text-sm leading-relaxed">{f.description}</p>
               </div>
             ))}

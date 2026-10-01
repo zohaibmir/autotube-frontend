@@ -4,7 +4,7 @@ import { CheckCircle2, Loader2, ListOrdered, Plus, Zap, ArrowRight, Clapperboard
 import { useMutation } from '@tanstack/react-query'
 import { useCreateStore } from '@store/create'
 import { useChannels } from '@hooks/useJobs'
-import { queueApi, jobsApi, billingApi } from '@api/services'
+import { queueApi, jobsApi, shortsApi, billingApi } from '@api/services'
 import { useToast } from '@components/Toast'
 
 export default function SubmitPage() {
@@ -13,13 +13,18 @@ export default function SubmitPage() {
   const { data: channels = [] } = useChannels()
   const {
     selectedTopic, scriptContent, seoPackage, channelSlug, contentType,
-    thumbnailData, setStep, reset,
+    thumbnailData, voiceId, visualSource, visualCustomVideoPath, artStyle, bgMusicPath, setStep, reset,
   } = useCreateStore()
 
+  const isShort = contentType === 'short'
   const [mode, setMode] = useState<'run' | 'queue'>('run')
   const [shortsCount, setShortsCount] = useState(1)
   const [shortsMode, setShortsMode] = useState<'separate' | 'extract'>('separate')
   const [done, setDone]  = useState(false)
+  // Snapshot of isShort at the moment of successful submission - the done
+  // screen below reads this instead of the live `isShort` because the store
+  // (and its contentType) gets reset right after success (see onSuccess).
+  const [doneWasShort, setDoneWasShort] = useState(false)
   const [planGate, setPlanGate] = useState<{ used: number; limit: number; plan: string } | null>(null)
   const [checkingOut, setCheckingOut] = useState(false)
 
@@ -30,7 +35,25 @@ export default function SubmitPage() {
 
   const submitMutation = useMutation({
     mutationFn: async () => {
-      if (mode === 'queue') {
+      if (isShort) {
+        // Shorts content-type: the script written in this wizard IS the whole
+        // Short - build it directly via the standalone vertical-Short pipeline
+        // instead of the long-form pipeline (which would narrate the entire
+        // script as an 8-12 min video regardless of the Shorts selection).
+        await shortsApi.scriptRun({
+          topic,
+          scriptText:     scriptContent,
+          channel_slug:   channelSlug || undefined,
+          voice_id:       voiceId || undefined,
+          seoTitle:       seoPackage?.selectedTitle || undefined,
+          seoDescription: seoPackage?.description   || undefined,
+          seoTags:        seoPackage?.tags?.join(', ') || undefined,
+          thumbDataUrl:   thumbDataUrl || undefined,
+          visualSource: visualSource !== 'stock' ? visualSource : undefined,
+          artStyle: visualSource === 'ai_image' ? (artStyle || undefined) : undefined,
+          bgMusicPath: bgMusicPath || undefined,
+        })
+      } else if (mode === 'queue') {
         await queueApi.add(topic, channelSlug || undefined)
       } else {
         await jobsApi.run({
@@ -42,22 +65,33 @@ export default function SubmitPage() {
           seoDescription: seoPackage?.description   || undefined,
           seoTags:        seoPackage?.tags?.join(', ') || undefined,
           thumbDataUrl:   thumbDataUrl || undefined,
+          voice_id:       voiceId || undefined,
           shortsCount,
           shortsMode: shortsMode,
+          visualSource: visualSource !== 'stock' ? visualSource : undefined,
+          visualCustomVideoPath: visualSource === 'custom_video' ? (visualCustomVideoPath || undefined) : undefined,
+          artStyle: visualSource === 'ai_image' ? (artStyle || undefined) : undefined,
+          bgMusicPath: bgMusicPath || undefined,
         })
       }
     },
     onSuccess: () => {
+      setDoneWasShort(isShort)
       setDone(true)
-      toast.success(mode === 'queue' ? 'Added to queue' : 'Pipeline started!')
+      toast.success(isShort ? 'Short pipeline started!' : (mode === 'queue' ? 'Added to queue' : 'Pipeline started!'))
+      // Clear the draft store right away - not only when the user explicitly
+      // clicks "New Video" below. Otherwise clicking "View Jobs" (the primary
+      // button) leaves this topic's script/SEO/thumbnail data in localStorage,
+      // where it can get silently attached to the NEXT topic submitted.
+      reset()
     },
     onError: (err: any) => {
-      // 402 = plan limit reached — show upgrade gate instead of generic toast
+      // 402 = plan limit reached - show upgrade gate instead of generic toast
       const detail = err?.response?.data?.detail
       if (err?.response?.status === 402 && detail?.code === 'plan_limit_reached') {
         setPlanGate({ used: detail.used, limit: detail.limit, plan: detail.plan })
       } else {
-        toast.error('Submission failed — try again')
+        toast.error('Submission failed - try again')
       }
     },
   })
@@ -67,10 +101,12 @@ export default function SubmitPage() {
       <div className="max-w-[600px] mx-auto px-6 py-16 flex flex-col items-center text-center">
         <CheckCircle2 size={40} strokeWidth={1} className="text-[#16A34A] mb-5" />
         <h1 className="text-[20px] font-semibold text-[#0A0A0A] mb-2">
-          {mode === 'queue' ? 'Added to Queue' : 'Pipeline Running'}
+          {doneWasShort ? 'Short Building' : mode === 'queue' ? 'Added to Queue' : 'Pipeline Running'}
         </h1>
         <p className="text-[13px] text-[#525252] max-w-xs mb-8">
-          {mode === 'queue'
+          {doneWasShort
+            ? 'Your vertical Short has started building and will upload to YouTube Shorts automatically. You can track progress in Jobs.'
+            : mode === 'queue'
             ? 'Your topic has been added to the queue. It will run on the next scheduled slot.'
             : 'Your video pipeline has started. You can track progress in Jobs.'}
         </p>
@@ -100,7 +136,7 @@ export default function SubmitPage() {
         const { checkout_url } = await billingApi.checkout('pro')
         window.location.href = checkout_url
       } catch {
-        toast.error('Could not start checkout — try again')
+        toast.error('Could not start checkout - try again')
         setCheckingOut(false)
       }
     }
@@ -185,7 +221,7 @@ export default function SubmitPage() {
           { label: 'Type',        value: contentType },
           { label: 'Tags',        value: seoPackage?.tags?.slice(0, 6).join(', ') || '—' },
           ...(scriptContent
-            ? [{ label: 'Script', value: `${scriptContent.split(/\s+/).filter(Boolean).length} words — will be used by pipeline` }]
+            ? [{ label: 'Script', value: `${scriptContent.split(/\s+/).filter(Boolean).length} words - will be used by pipeline` }]
             : []),
         ].map(({ label, value }) => (
           <div key={label} className="flex items-start gap-4 px-5 py-3">
@@ -208,32 +244,43 @@ export default function SubmitPage() {
         )}
       </div>
 
-      {/* Mode selector */}
-      <div className="grid grid-cols-2 gap-3 mb-6">
-        {([
-          { id: 'run',   icon: <Plus size={16} strokeWidth={1.5} />,         label: 'Run Now',       desc: 'Start the pipeline immediately' },
-          { id: 'queue', icon: <ListOrdered size={16} strokeWidth={1.5} />,  label: 'Add to Queue',  desc: 'Queue for next scheduled slot'  },
-        ] as const).map((opt) => (
-          <button
-            key={opt.id}
-            onClick={() => setMode(opt.id)}
-            className={`flex flex-col items-start gap-1.5 p-4 border rounded-lg text-left transition-colors ${
-              mode === opt.id
-                ? 'border-[#0A0A0A] bg-white'
-                : 'border-[#E5E5E5] bg-white hover:border-[#D4D4D4]'
-            }`}
-          >
-            <span className={mode === opt.id ? 'text-[#0A0A0A]' : 'text-[#A3A3A3]'}>{opt.icon}</span>
-            <p className={`text-[13px] font-semibold ${mode === opt.id ? 'text-[#0A0A0A]' : 'text-[#525252]'}`}>
-              {opt.label}
-            </p>
-            <p className="text-[11px] text-[#A3A3A3]">{opt.desc}</p>
-          </button>
-        ))}
-      </div>
+      {/* Mode selector - Shorts always run immediately via the standalone Short pipeline */}
+      {!isShort && (
+        <div className="grid grid-cols-2 gap-3 mb-6">
+          {([
+            { id: 'run',   icon: <Plus size={16} strokeWidth={1.5} />,         label: 'Run Now',       desc: 'Start the pipeline immediately' },
+            { id: 'queue', icon: <ListOrdered size={16} strokeWidth={1.5} />,  label: 'Add to Queue',  desc: 'Queue for next scheduled slot'  },
+          ] as const).map((opt) => (
+            <button
+              key={opt.id}
+              onClick={() => setMode(opt.id)}
+              className={`flex flex-col items-start gap-1.5 p-4 border rounded-lg text-left transition-colors ${
+                mode === opt.id
+                  ? 'border-[#0A0A0A] bg-white'
+                  : 'border-[#E5E5E5] bg-white hover:border-[#D4D4D4]'
+              }`}
+            >
+              <span className={mode === opt.id ? 'text-[#0A0A0A]' : 'text-[#A3A3A3]'}>{opt.icon}</span>
+              <p className={`text-[13px] font-semibold ${mode === opt.id ? 'text-[#0A0A0A]' : 'text-[#525252]'}`}>
+                {opt.label}
+              </p>
+              <p className="text-[11px] text-[#A3A3A3]">{opt.desc}</p>
+            </button>
+          ))}
+        </div>
+      )}
 
-      {/* Shorts configuration (Run Now only) */}
-      {mode === 'run' && (
+      {isShort && (
+        <div className="bg-[#EFF6FF] border border-[#BFDBFE] rounded-lg p-4 mb-6">
+          <p className="text-[12px] text-[#1E40AF]">
+            This will build a standalone vertical Short directly from the script above and upload it to YouTube Shorts - no long-form video is created.
+          </p>
+        </div>
+      )}
+
+      {/* Shorts configuration (Run Now only, long-form content type only - a "Companion Short"
+          alongside the main video doesn't apply when the submission IS already a Short) */}
+      {mode === 'run' && !isShort && (
         <div className="bg-white border border-[#E5E5E5] rounded-lg p-5 mb-6">
           <div className="flex items-center gap-2 mb-4">
             <Clapperboard size={14} strokeWidth={1.5} className="text-[#525252]" />
@@ -270,7 +317,7 @@ export default function SubmitPage() {
                   {
                     val: 'separate' as const,
                     label: 'Dedicated script',
-                    desc: 'Claude writes a purpose-built 60s script for this Short — native short-form hook, better engagement.',
+                    desc: 'AI writes a purpose-built 60s script for this Short - native short-form hook, better engagement.',
                   },
                   {
                     val: 'extract' as const,
@@ -308,7 +355,7 @@ export default function SubmitPage() {
       >
         {submitMutation.isPending
           ? <><Loader2 size={14} strokeWidth={1.5} className="animate-spin" /> Submitting…</>
-          : mode === 'queue' ? 'Add to Queue' : 'Start Pipeline'
+          : isShort ? 'Build Short' : mode === 'queue' ? 'Add to Queue' : 'Start Pipeline'
         }
       </button>
     </div>

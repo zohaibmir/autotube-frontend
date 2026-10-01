@@ -2,6 +2,7 @@ import React from 'react'
 import { Link } from 'react-router-dom'
 import Navbar from '@components/Navbar'
 import Footer from '@components/Footer'
+import SEO from '@components/SEO'
 import { ArrowRight } from 'lucide-react'
 
 const pipeline = [
@@ -35,20 +36,25 @@ const pipeline = [
 const faqs = [
   { q: 'How long does a video take?', a: '3–8 minutes for most videos. A 60-second Short takes ~2–3 min; a 10-minute video takes 6–10 min.' },
   { q: 'Can I edit the script before it renders?', a: 'Yes. Every job has a review step where you can modify the script, change the title, or swap visuals before rendering starts.' },
-  { q: 'What languages are supported?', a: '30+ languages including English, Spanish, French, German, Arabic, Hindi, and Mandarin — script and voiceover both.' },
+  { q: 'What languages are supported?', a: '30+ languages including English, Spanish, French, German, Arabic, Hindi, and Mandarin - script and voiceover both.' },
 ]
 
 export default function HowItWorksPage() {
   return (
     <div className="min-h-screen bg-white flex flex-col">
       <Navbar />
+      <SEO
+        title="How It Works"
+        description="See exactly how Channelpilot turns a topic into a published video: script generation, voiceover, visual assembly, render, and multi-platform upload - every stage visible, nothing hidden."
+        path="/how-it-works"
+      />
 
       <section className="pt-28 pb-20 px-6 border-b border-gray-100">
         <div className="max-w-3xl mx-auto">
           <p className="text-sky-500 font-semibold text-sm uppercase tracking-widest mb-5">How it works</p>
           <h1 className="text-5xl font-bold text-navy-600 leading-[1.1] mb-5">Five stages.<br />Fully automatic.</h1>
           <p className="text-xl text-gray-500 leading-relaxed max-w-xl">
-            From a single topic to a published, SEO-optimised video — the entire pipeline runs without you touching a timeline.
+            From a single topic to a published, SEO-optimised video - the entire pipeline runs without you touching a timeline.
           </p>
         </div>
       </section>
@@ -103,7 +109,7 @@ export default function HowItWorksPage() {
         <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
           <div>
             <h2 className="text-2xl font-bold text-navy-600 mb-1">Ready to try it?</h2>
-            <p className="text-gray-500">Start free — no credit card required.</p>
+            <p className="text-gray-500">Start free - no credit card required.</p>
           </div>
           <Link to="/signup" className="btn-primary whitespace-nowrap">
             Get started <ArrowRight size={16} />

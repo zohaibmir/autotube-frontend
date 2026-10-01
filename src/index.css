@@ -117,22 +117,30 @@ textarea:focus-visible {
   }
 }
 
-/* Typography scale */
-h1, h2, h3, h4, h5, h6 {
-  margin: 0;
-  font-weight: 600;
-  line-height: 1.25;
-  letter-spacing: -0.025em;
-  color: #1A3A52;
+/* Typography scale — wrapped in Tailwind's `base` layer so any component's
+   Tailwind text-size utility (e.g. text-lg, text-2xl) reliably overrides this
+   default, regardless of source order. Without @layer, these plain-element
+   selectors sit *after* @tailwind utilities in this same file and win by
+   source order alone — which silently broke every card/heading that used a
+   bare <h2>/<h3> without an explicit text-* class (e.g. blog card titles
+   rendering at ~2.25rem instead of a card-appropriate size). */
+@layer base {
+  h1, h2, h3, h4, h5, h6 {
+    margin: 0;
+    font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: -0.025em;
+    color: #1A3A52;
+  }
+
+  h1 { font-size: clamp(2rem, 5vw, 3.25rem); font-weight: 700; }
+  h2 { font-size: clamp(1.5rem, 3vw, 2.25rem); }
+  h3 { font-size: 1.25rem; }
+
+  p { margin: 0; line-height: 1.7; }
+  button { font-family: inherit; cursor: pointer; }
+  a { text-decoration: none; color: inherit; }
 }
-
-h1 { font-size: clamp(2rem, 5vw, 3.25rem); font-weight: 700; }
-h2 { font-size: clamp(1.5rem, 3vw, 2.25rem); }
-h3 { font-size: 1.25rem; }
-
-p { margin: 0; line-height: 1.7; }
-button { font-family: inherit; cursor: pointer; }
-a { text-decoration: none; color: inherit; }
 
 /* ── Utility classes ─────────────────────────────────────────────────────── */
 @layer components {

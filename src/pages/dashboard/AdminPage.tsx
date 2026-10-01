@@ -141,7 +141,7 @@ function DigestSection({ channelSlug }: { channelSlug: string }) {
       ) : isError ? (
         <div className="flex items-center gap-2 text-[12px] text-[#A3A3A3] py-4">
           <AlertCircle size={13} strokeWidth={1.5} />
-          Digest unavailable — YouTube Analytics sync may be needed.
+          Digest unavailable - YouTube Analytics sync may be needed.
         </div>
       ) : typeof digest === 'string' ? (
         <div className="prose-sm">
@@ -241,7 +241,7 @@ function InsightsSection({ channelSlug }: { channelSlug: string }) {
       ) : isError || insights.length === 0 ? (
         <div className="flex items-center gap-2 text-[12px] text-[#A3A3A3] py-4">
           <AlertCircle size={13} strokeWidth={1.5} />
-          {isError ? 'Insights unavailable — sync YouTube Analytics to enable.' : 'No insights yet. Sync to generate AI analysis.'}
+          {isError ? 'Insights unavailable - sync YouTube Analytics to enable.' : 'No insights yet. Sync to generate AI analysis.'}
         </div>
       ) : (
         <div className="space-y-3">
@@ -296,7 +296,7 @@ function SyncSection({ channelSlug }: { channelSlug: string }) {
       queryClient.invalidateQueries({ queryKey: ['admin-digest'] })
       queryClient.invalidateQueries({ queryKey: ['admin-insights'] })
     },
-    onError: () => setSyncMsg('Sync failed — check channel authentication'),
+    onError: () => setSyncMsg('Sync failed - check channel authentication'),
     onSettled: () => setSyncing(false),
   })
 
@@ -465,7 +465,7 @@ export default function AdminPage() {
     costsQuery.refetch()
   }
 
-  // Client-side gate — the nav link is already hidden for non-admins, this
+  // Client-side gate - the nav link is already hidden for non-admins, this
   // blocks direct URL navigation too. Placed after all hooks (Rules of
   // Hooks) so the guard doesn't change hook-call order across renders.
   // The backend endpoints this page calls are intentionally shared with

@@ -52,6 +52,7 @@ const NAV_SECTIONS = [
       { path: '/app/studio',   label: 'Studio',     icon: Film,        exact: false },
       { path: '/app/kids',     label: 'Kids Studio', icon: Sparkles,    exact: false },
       { path: '/app/calendar', label: 'Calendar',    icon: CalendarDays, exact: false },
+      { path: '/app/seo-generator', label: 'SEO Generator', icon: Sparkles, exact: false },
     ],
   },
 ]
@@ -97,7 +98,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
   return (
     <div className="flex h-screen bg-[#FAFAFA]">
-      {/* Skip to main content — visible only on keyboard focus */}
+      {/* Skip to main content - visible only on keyboard focus */}
       <a href="#main-content" className="skip-link">Skip to main content</a>
 
       {/* ── Sidebar ─────────────────────────────────────────────────────── */}
@@ -262,7 +263,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
       {/* ── Main content ─────────────────────────────────────────────────── */}
       <main id="main-content" className="flex-1 overflow-auto min-w-0" tabIndex={-1}>
-        {/* Usage warning banner — shown at ≥80%, hidden if dismissed or on billing page */}
+        {/* Usage warning banner - shown at ≥80%, hidden if dismissed or on billing page */}
         {usageData && usageData.plan !== 'enterprise' && usageData.plan !== 'unlimited' && usageData.pct >= 80 && !bannerDismissed && location.pathname !== '/app/billing' && (
           <div className={`flex items-center justify-between gap-3 px-6 py-2.5 border-b text-[13px] ${
             usageData.pct >= 100

@@ -50,8 +50,13 @@ export const jobsApi = {
   // POST /api/pipeline/jobs/action { job_id, action: cancel | retry | resume-from-merge }
   action: async (jobId: string, action: 'cancel' | 'retry' | 'resume-from-merge') => {
     if (action === 'cancel') {
-      // cancel uses a dedicated global endpoint
-      const response = await apiClient.post('/api/pipeline/cancel')
+      // Cancel a SPECIFIC job by ID via the kill endpoint (marks the persisted
+      // .jobs/*.json record as killed) instead of the old global /cancel call,
+      // which only reset an in-memory singleton unrelated to this job_id and
+      // never touched the job's actual persisted status.
+      // NOTE: this still cannot forcibly stop the in-process background thread
+      // doing the actual work (script/TTS/render) - see IMPROVEMENTS.md §1 B8.
+      const response = await apiClient.post(`/api/pipeline/kill/${jobId}`)
       return response.data
     }
     // retry → 'rerun', resume-from-merge → 'continue'
@@ -71,6 +76,15 @@ export const jobsApi = {
     const r = await apiClient.get('/api/pipeline/lock-status')
     return r.data
   },
+
+  // POST /api/pipeline/upload - publish the currently-ready pipeline video to YouTube.
+  // job_id lets the backend recover the video's file paths from disk (runs/<job_id>/)
+  // when the in-memory pipeline singleton no longer matches this job - e.g. after a
+  // server restart, or once a later run has reset it.
+  upload: async (payload: { channel_slug?: string; privacy_status?: 'public' | 'unlisted' | 'private'; job_id?: string }) => {
+    const response = await apiClient.post('/api/pipeline/upload', payload)
+    return response.data
+  },
 }
 
 export const channelsApi = {
@@ -80,7 +94,14 @@ export const channelsApi = {
     return response.data.channels ?? []
   },
 
-  // POST /api/channels/{slug}/reset-auth
+  // POST /api/channels/add  { name } → { ok, slug, channel_id } (local) or
+  // { ok, requires_oauth: true, oauth_url } (hosted - open in a popup)
+  add: async (name: string) => {
+    const response = await apiClient.post('/api/channels/add', { name })
+    return response.data
+  },
+
+  // POST /api/channels/{slug}/reset-auth - same dual local/hosted-OAuth response shape as `add`
   resetAuth: async (slug: string) => {
     const response = await apiClient.post(`/api/channels/${slug}/reset-auth`)
     return response.data
@@ -187,13 +208,13 @@ export type VoiceListResponse = {
 }
 
 export const voiceApi = {
-  // GET /api/voices/list — all Edge TTS groups + EL settings
+  // GET /api/voices/list - all Edge TTS groups + EL settings
   list: async (): Promise<VoiceListResponse> => {
     const r = await apiClient.get<VoiceListResponse>('/api/voices/list')
     return r.data
   },
 
-  // GET /api/voices/assignments — { slug: voice_id } map
+  // GET /api/voices/assignments - { slug: voice_id } map
   assignments: async (): Promise<Record<string, string>> => {
     const r = await apiClient.get<{ ok: boolean; assignments: Record<string, string> }>('/api/voices/assignments')
     return r.data.assignments ?? {}
@@ -226,7 +247,7 @@ export const voiceApi = {
 
 // ── BYOK API Keys ─────────────────────────────────────────────────────────────
 export const byokApi = {
-  // Backend returns { keys: { anthropic: bool, elevenlabs: bool, ... } } — normalise
+  // Backend returns { keys: { anthropic: bool, elevenlabs: bool, ... } } - normalise
   // to a flat Record<string, boolean> here so every consumer (DashboardHome onboarding
   // checklist, Settings → API Keys tab, AdminPage system-health widget) can keep using
   // simple Object.values(status).some/filter(Boolean) checks without re-implementing
@@ -275,7 +296,7 @@ export const communityApi = {
     return r.data
   },
 
-  // POST /api/community-posts/generate — returns text, does NOT save
+  // POST /api/community-posts/generate - returns text, does NOT save
   generate: async (payload: {
     title: string
     description?: string
@@ -286,7 +307,7 @@ export const communityApi = {
     return r.data
   },
 
-  // POST /api/community-posts — save a draft to the library
+  // POST /api/community-posts - save a draft to the library
   save: async (payload: {
     text: string
     channel_slug?: string
@@ -386,6 +407,9 @@ export const shortsApi = {
     seoDescription?: string
     seoTags?: string
     thumbDataUrl?: string
+    visualSource?: string
+    artStyle?: string
+    bgMusicPath?: string
   }): Promise<{ ok: boolean }> => {
     const r = await apiClient.post('/api/shorts/script/run', payload)
     return r.data
@@ -410,7 +434,7 @@ export const shortsApi = {
 }
 
 export const billingApi = {
-  // GET /api/auth/me — real plan + usage data
+  // GET /api/auth/me - real plan + usage data
   getMe: async () => {
     const response = await apiClient.get('/api/auth/me')
     return response.data
@@ -465,7 +489,7 @@ export const socialApi = {
     return response.data
   },
 
-  // GET /api/social/status?channel_slug — platforms with connection status + stats
+  // GET /api/social/status?channel_slug - platforms with connection status + stats
   status: async (channelSlug?: string) => {
     const response = await apiClient.get('/api/social/status', {
       params: channelSlug ? { channel_slug: channelSlug } : {},
@@ -473,7 +497,7 @@ export const socialApi = {
     return response.data
   },
 
-  // POST /api/social/config — save platform credentials
+  // POST /api/social/config - save platform credentials
   saveConfig: async (platform: string, data: Record<string, string>, channelSlug?: string) => {
     const response = await apiClient.post('/api/social/config', {
       platform,
@@ -494,34 +518,59 @@ export const socialApi = {
 
 // ── Analytics API ─────────────────────────────────────────────────────────────
 export const analyticsApi = {
-  // GET /api/db/stats — channel stats (videos, views, subs, watch time)
-  channelStats: async () => {
-    const response = await apiClient.get('/api/db/stats')
+  // GET /api/db/stats - channel stats (videos, views, subs, watch time)
+  channelStats: async (channelSlug?: string) => {
+    const response = await apiClient.get('/api/db/stats', {
+      params: channelSlug ? { channel_slug: channelSlug } : {},
+    })
     return response.data
   },
-  // GET /api/db/costs — monthly API cost breakdown per service
+  // GET /api/db/costs - monthly API cost breakdown per service
   costs: async () => {
     const response = await apiClient.get('/api/db/costs')
     return response.data
   },
-  // GET /api/db/videos — recent video history
+  // GET /api/db/videos - recent video history
   videos: async (limit = 20) => {
     const response = await apiClient.get('/api/db/videos', { params: { limit } })
     return response.data
   },
-  // GET /api/analytics/insights — YouTube analytics data
+  // GET /api/analytics/insights - YouTube analytics data
   insights: async (channelSlug?: string) => {
     const response = await apiClient.get('/api/analytics/insights', {
       params: channelSlug ? { channel_slug: channelSlug } : {},
     })
     return response.data
   },
-  // GET /api/db/ypp — YouTube Partner Program progress
-  ypp: async () => {
-    const response = await apiClient.get('/api/db/ypp')
+  // GET /api/analytics/best-times - best-time-to-publish recommendation
+  bestTimes: async (channelSlug?: string) => {
+    const response = await apiClient.get('/api/analytics/best-times', {
+      params: channelSlug ? { channel_slug: channelSlug } : {},
+    })
     return response.data
   },
-  // GET /api/analytics/digest — AI weekly digest summary
+  // GET /api/db/ypp - YouTube Partner Program progress (rolling last-30-days snapshot)
+  ypp: async (channelSlug?: string) => {
+    const response = await apiClient.get('/api/db/ypp', {
+      params: channelSlug ? { channel_slug: channelSlug } : {},
+    })
+    return response.data
+  },
+  // GET /api/analytics/ypp-lifetime - real lifetime YPP progress, fetched live from YouTube
+  yppLifetime: async (channelSlug?: string) => {
+    const response = await apiClient.get('/api/analytics/ypp-lifetime', {
+      params: channelSlug ? { channel_slug: channelSlug } : {},
+    })
+    return response.data
+  },
+  // GET /api/analytics/traffic-sources - channel-wide traffic source breakdown, live from YouTube
+  trafficSources: async (channelSlug: string, lookbackDays = 30) => {
+    const response = await apiClient.get('/api/analytics/traffic-sources', {
+      params: { channel_slug: channelSlug, lookback_days: lookbackDays },
+    })
+    return response.data
+  },
+  // GET /api/analytics/digest - AI weekly digest summary
   digest: async (channelSlug?: string, lookbackDays = 7) => {
     const response = await apiClient.get('/api/analytics/digest', {
       params: {
@@ -531,21 +580,21 @@ export const analyticsApi = {
     })
     return response.data
   },
-  // GET /api/analytics/status — sync status per channel
+  // GET /api/analytics/status - sync status per channel
   syncStatus: async (channelSlug?: string) => {
     const response = await apiClient.get('/api/analytics/status', {
       params: channelSlug ? { channel_slug: channelSlug } : {},
     })
     return response.data
   },
-  // GET /api/analytics/history — sync history per channel
+  // GET /api/analytics/history - sync history per channel
   syncHistory: async (channelSlug?: string) => {
     const response = await apiClient.get('/api/analytics/history', {
       params: channelSlug ? { channel_slug: channelSlug } : {},
     })
     return response.data
   },
-  // POST /api/analytics/sync — trigger manual sync
+  // POST /api/analytics/sync - trigger manual sync
   triggerSync: async (channelSlug?: string) => {
     const response = await apiClient.post('/api/analytics/sync', {
       ...(channelSlug ? { channel_slug: channelSlug } : {}),
@@ -575,7 +624,7 @@ export const schedulerApi = {
     return response.data
   },
 
-  // POST /api/scheduler/test-run — triggers publish_next() directly
+  // POST /api/scheduler/test-run - triggers publish_next() directly
   testRun: async (channelSlug?: string) => {
     const r = await apiClient.post('/api/scheduler/test-run', { channel_slug: channelSlug ?? null })
     return r.data
@@ -583,12 +632,12 @@ export const schedulerApi = {
 }
 
 export const automationApi = {
-  // GET /api/settings — returns current automation settings from .env
+  // GET /api/settings - returns current automation settings from .env
   get: async () => {
     const response = await apiClient.get('/api/settings')
     return response.data
   },
-  // POST /api/settings/sync-env — save toggles to .env
+  // POST /api/settings/sync-env - save toggles to .env
   save: async (values: Record<string, unknown>) => {
     const response = await apiClient.post('/api/settings/sync-env', values)
     return response.data
@@ -608,11 +657,11 @@ export const aiApi = {
     return response.data
   },
 
-  // POST /api/ai/claude — proxies a single-prompt Claude call.
+  // POST /api/ai/claude - proxies a single-prompt Claude call.
   // NOTE: despite the historical name, this endpoint is NOT streaming (SSE) —
   // it returns a single JSON body `{ text, stop_reason }`. Field names must
   // match the backend's ClaudeRequest model exactly (`prompt`/`tokens`), not
-  // `messages`/`max_tokens` — a mismatch here previously caused every script
+  // `messages`/`max_tokens` - a mismatch here previously caused every script
   // generation call to fail with a 422.
   claude: async (prompt: string, tokens = 4096) => {
     return _authFetch(`${_apiBase()}/api/ai/claude`, {
@@ -628,7 +677,7 @@ export const aiApi = {
     return response.data
   },
 
-  // POST /api/ai/score — retention score for a script
+  // POST /api/ai/score - retention score for a script
   score: async (script: string) => {
     const response = await apiClient.post('/api/ai/score', { script })
     return response.data
@@ -690,6 +739,25 @@ export const accountApi = {
 }
 
 // ── Channel Ops API ───────────────────────────────────────────────────────────
+// ── Channel Profiles API (per-channel video defaults: visuals, captions) ───────
+export const channelProfilesApi = {
+  // GET /api/channel-profiles/{slug} → { ok, profile }
+  get: async (slug: string) => {
+    const response = await apiClient.get(`/api/channel-profiles/${encodeURIComponent(slug)}`)
+    return response.data as { ok: boolean; profile: Record<string, any> }
+  },
+
+  // POST /api/channel-profiles/{slug} (partial save — only sent fields are updated)
+  update: async (slug: string, fields: {
+    default_visual_source?: string
+    default_art_style?: string
+    captions_enabled?: boolean
+  }) => {
+    const response = await apiClient.post(`/api/channel-profiles/${encodeURIComponent(slug)}`, fields)
+    return response.data as { ok: boolean; profile: Record<string, any> }
+  },
+}
+
 export const channelOpsApi = {
   // GET /api/channel/audit?slug
   audit: async (slug?: string) => {
@@ -730,9 +798,58 @@ export const channelOpsApi = {
     return response.data
   },
 
+  // POST /api/channel/fix-selected  { videoIds, channel } - bulk-fix an explicit selection
+  fixSelected: async (videoIds: string[], channel?: string) => {
+    const response = await apiClient.post('/api/channel/fix-selected', { videoIds, channel })
+    return response.data
+  },
+
   // POST /api/channel/fix-all  { channel }
   fixAll: async (channel?: string) => {
     const response = await apiClient.post('/api/channel/fix-all', { channel })
+    return response.data
+  },
+
+  // POST /api/channel/audit/coach  { channel } → AI coaching layer on top of the rule-based audit
+  auditCoach: async (channel?: string) => {
+    const response = await apiClient.post('/api/channel/audit/coach', { channel })
+    return response.data
+  },
+
+  // GET /api/channel/benchmark?slug&compare → compare against another public channel
+  benchmark: async (compare: string, slug?: string) => {
+    const response = await apiClient.get('/api/channel/benchmark', {
+      params: { compare, ...(slug ? { slug } : {}) },
+    })
+    return response.data
+  },
+
+  // POST /api/channel/keyword-clusters { topic, channel } → real YouTube-data-backed
+  // keyword clusters with competition read + recommendation per cluster.
+  // Rate-limited server-side (5/hour) since each call spends real YouTube API quota.
+  keywordClusters: async (topic: string, channel?: string) => {
+    const response = await apiClient.post('/api/channel/keyword-clusters', { topic, channel })
+    return response.data
+  },
+
+  // POST /api/channel/rank-check { videoId, keyword, channel } → real YouTube search
+  // rank snapshot for this video+keyword, stored for future "explain movement" calls.
+  // Shares the same 5/hour rate limit as keywordClusters (same quota cost).
+  rankCheck: async (videoId: string, keyword: string, channel?: string) => {
+    const response = await apiClient.post('/api/channel/rank-check', { videoId, keyword, channel })
+    return response.data
+  },
+
+  // GET /api/channel/rank-history?videoId&keyword → past rank snapshots, most recent first
+  rankHistory: async (videoId: string, keyword: string) => {
+    const response = await apiClient.get('/api/channel/rank-history', { params: { videoId, keyword } })
+    return response.data
+  },
+
+  // GET /api/channel/rank-narrative?videoId&keyword → AI narrative explaining movement
+  // between the two most recent rank checks (requires 2+ checks to exist)
+  rankNarrative: async (videoId: string, keyword: string) => {
+    const response = await apiClient.get('/api/channel/rank-narrative', { params: { videoId, keyword } })
     return response.data
   },
 }
@@ -798,6 +915,22 @@ export const studioApi = {
   // POST /api/studio/delete → { ok, deleted }
   deleteVideo: async (videoPath: string) => {
     const response = await apiClient.post('/api/studio/delete', { video_path: videoPath })
+    return response.data
+  },
+
+  // POST /api/studio/import/analyze { url } → { ok, video_id, title, duration, suggested_clips: [...] }
+  // Fetches real captions (no video download) and asks Claude for 2-3 clip-worthy
+  // moments grounded in the actual transcript timing. Rate-limited (10/hour).
+  importAnalyze: async (url: string) => {
+    const response = await apiClient.post('/api/studio/import/analyze', { url })
+    return response.data
+  },
+
+  // POST /api/studio/import/extract { url, clips } → { ok, clips: [{label, path, duration, size_mb}] }
+  // Downloads the source video (cached after first time) and extracts the given
+  // clips - same shape/flow as extractClips() above.
+  importExtract: async (url: string, clips: Array<{ start: number; end: number; label: string }>) => {
+    const response = await apiClient.post('/api/studio/import/extract', { url, clips })
     return response.data
   },
 }
@@ -885,6 +1018,16 @@ export const calendarApi = {
     return response.data
   },
 }
+
+// ── Public API (no signup required) ───────────────────────────────────────────
+export const publicApi = {
+  // POST /api/public/seo-analyze { url } - free SEO checklist for any public YouTube video
+  seoAnalyze: async (url: string) => {
+    const response = await apiClient.post('/api/public/seo-analyze', { url })
+    return response.data
+  },
+}
+
 
 // ── Kids / Animated Promo API ─────────────────────────────────────────────────
 export const kidsApi = {
@@ -1055,6 +1198,33 @@ export const thumbnailApi = {
   pexelsBg: async (query: string) => {
     const response = await apiClient.get('/api/pexels/bg', { params: { q: query } })
     return response.data as { ok: boolean; b64: string; mime: string; url?: string }
+  },
+}
+
+// ── Visual Formats API (creation wizard "Visuals" step) ────────────────────────
+export const visualsApi = {
+  // POST /api/upload-visual-video (multipart) → { ok, path }
+  uploadVideo: async (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await _authFetch(`${_apiBase()}/api/upload-visual-video`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.detail || 'Upload failed')
+    return res.json() as Promise<{ ok: boolean; path: string }>
+  },
+
+  // POST /api/upload-visual-audio (multipart) → { ok, path }
+  uploadAudio: async (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await _authFetch(`${_apiBase()}/api/upload-visual-audio`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.detail || 'Upload failed')
+    return res.json() as Promise<{ ok: boolean; path: string }>
   },
 }
 

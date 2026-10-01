@@ -38,11 +38,18 @@ export default function JobsList() {
   })
 
   const cancelMutation = useMutation({
-    mutationFn: () => jobsApi.cancel(),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pipeline-lock-status'], exact: false }),
+    mutationFn: (jobId: string) => jobsApi.action(jobId, 'cancel'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pipeline-lock-status'], exact: false })
+      queryClient.invalidateQueries({ queryKey: ['jobs'], exact: false })
+    },
   })
 
-  const isLocked = lockData?.status === 'running' || lockData?.locked === true
+  // pipeline_status() returns { running, running_count, jobs, pid } - there is no
+  // top-level status/locked/topic/progress field (those never existed on the
+  // backend response, so the banner previously never rendered at all).
+  const runningJob = (lockData?.jobs as any[] | undefined)?.find((j) => j.status === 'running')
+  const isLocked = Boolean(lockData?.running) && !!runningJob
 
   const filtered = allJobs
     .filter((j: any) => {
@@ -94,16 +101,16 @@ export default function JobsList() {
           <Lock size={13} strokeWidth={1.5} className="text-[#2563EB] shrink-0" />
           <div className="flex-1 min-w-0">
             <span className="text-[12px] font-medium text-[#1D4ED8]">Pipeline running</span>
-            {lockData?.topic && (
-              <span className="text-[12px] text-[#3B82F6] ml-2 truncate">{lockData.topic}</span>
+            {runningJob?.topic && (
+              <span className="text-[12px] text-[#3B82F6] ml-2 truncate">{runningJob.topic}</span>
             )}
-            {lockData?.progress != null && (
-              <span className="text-[11px] text-[#93C5FD] ml-2">{lockData.progress}%</span>
+            {runningJob?.progress != null && (
+              <span className="text-[11px] text-[#93C5FD] ml-2">{runningJob.progress}%</span>
             )}
           </div>
           <button
-            onClick={() => cancelMutation.mutate()}
-            disabled={cancelMutation.isPending}
+            onClick={() => runningJob && cancelMutation.mutate(runningJob.job_id)}
+            disabled={cancelMutation.isPending || !runningJob}
             className="text-[11px] font-medium text-[#BE123C] border border-[#FECACA] bg-white rounded px-2.5 py-1 hover:bg-[#FEF2F2] transition-colors disabled:opacity-40 shrink-0"
           >
             {cancelMutation.isPending ? 'Cancelling…' : 'Cancel'}
@@ -220,7 +227,7 @@ export default function JobsList() {
                 <td colSpan={7} className="px-5 py-16 text-center">
                   <p className="text-[#A3A3A3] text-sm">
                     {allJobs.length === 0
-                      ? 'No jobs yet — create your first job!'
+                      ? 'No jobs yet - create your first job!'
                       : 'No jobs match your filter.'}
                   </p>
                   {allJobs.length === 0 && (
@@ -237,7 +244,7 @@ export default function JobsList() {
               pageJobs.map((job: any) => {
                 const sc = statusConfig[job.status] || statusConfig.error
                 const label = job.topic?.replace(/^\[Short\]\s*/i, '') || job.job_id
-                const isShort = /^\[short\]/i.test(job.topic || '')
+                const isShort = /\[short\]/i.test(job.topic || '')
                 const isSelected = selected.has(job.job_id)
                 return (
                   <tr

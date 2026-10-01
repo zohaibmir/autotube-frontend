@@ -36,7 +36,7 @@ export default function LoginPage() {
           <div className="w-6 h-6 bg-[#0A0A0A] rounded-md flex items-center justify-center">
             <Zap size={12} strokeWidth={2} className="text-white" />
           </div>
-          AutoTube
+          Channelpilot
         </Link>
         <p className="text-sm text-[#A3A3A3]">
           No account?{' '}
@@ -53,7 +53,7 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
-              <div className="bg-[#FFF1F2] border border-[#FECDD3] rounded-md px-4 py-3 text-sm text-[#BE123C]">
+              <div role="alert" className="bg-[#FFF1F2] border border-[#FECDD3] rounded-md px-4 py-3 text-sm text-[#BE123C]">
                 {error}
               </div>
             )}

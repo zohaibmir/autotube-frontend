@@ -1,5 +1,5 @@
 /**
- * supabase.ts — stub kept for backward compatibility during migration.
+ * supabase.ts - stub kept for backward compatibility during migration.
  *
  * The Supabase JS client has been removed. All auth now flows through FastAPI:
  *   POST /api/auth/login

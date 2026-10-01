@@ -525,7 +525,7 @@ export default function CalendarPage() {
                               {day.getDate()}
                             </span>
 
-                            {/* Add button — only for current month days */}
+                            {/* Add button - only for current month days */}
                             {inMonth && !isAdding && (
                               <button
                                 onClick={() => {

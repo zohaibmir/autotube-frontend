@@ -71,18 +71,18 @@ export default function SeoPage() {
         return data as SeoResult
       } catch (err: any) {
         // Only fall back to a mock SEO result for genuine network/wiring
-        // failures — a real HTTP error response (e.g. 402 missing BYOK key)
+        // failures - a real HTTP error response (e.g. 402 missing BYOK key)
         // is re-thrown so the user sees what actually happened.
         if (err?.response) throw err
         const topic = selectedTopic?.topic ?? 'Your Video Topic'
         return {
           titles: [
             `${topic} (The Complete Guide)`,
-            `I Tried ${topic} for 30 Days — Here's What Happened`,
+            `I Tried ${topic} for 30 Days - Here's What Happened`,
             `Why Most People Get ${topic} Wrong`,
           ],
           selectedTitle: `${topic} (The Complete Guide)`,
-          description:  `In this video, we explore ${topic} in depth — covering everything from the fundamentals to advanced strategies you can use today.\n\nWhether you're a complete beginner or looking to level up, this guide has you covered.\n\n📌 Chapters below\n⬇️ Subscribe for weekly content`,
+          description:  `In this video, we explore ${topic} in depth - covering everything from the fundamentals to advanced strategies you can use today.\n\nWhether you're a complete beginner or looking to level up, this guide has you covered.\n\n📌 Chapters below\n⬇️ Subscribe for weekly content`,
           tags:         [topic.split(' ')[0], 'YouTube', 'Tutorial', 'HowTo', 'Guide', '2026', region !== 'Global' ? region : '', category].filter(Boolean),
           uploadTimingHint: 'Best upload windows: Tuesday 2–4 PM or Friday 12–2 PM (your audience timezone)',
           chapters: [
@@ -108,7 +108,7 @@ export default function SeoPage() {
   const handleContinue = () => {
     if (!result) { toast.error('Generate SEO first'); return }
     setSeoPackage(result)
-    setStep(4)
+    setStep(5)
     navigate('/app/create/thumbnail')
   }
 

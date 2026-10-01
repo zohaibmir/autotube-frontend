@@ -20,60 +20,53 @@ test.describe('Settings page', () => {
   test('settings page loads and shows tabs', async ({ page }) => {
     await expect(page).toHaveURL(/\/app\/settings/)
     // Should have tab navigation
-    const tabs = page.locator('[role="tab"], button[class*="tab"]')
-    const tabCount = await tabs.count()
-    expect(tabCount).toBeGreaterThan(1)
+    const tabs = page.getByRole('tab')
+    await expect(tabs.first()).toBeVisible()
+    expect(await tabs.count()).toBeGreaterThan(1)
   })
 
   test('API Keys tab shows service cards', async ({ page }) => {
-    // Click the API Keys tab
-    const apiKeysTab = page.getByRole('tab', { name: /api keys/i })
-      .or(page.getByRole('button', { name: /api keys/i }))
-    
-    if (await apiKeysTab.isVisible()) {
-      await apiKeysTab.click()
-      await page.waitForTimeout(1000)
-    }
+    await page.getByRole('tab', { name: 'API Keys', exact: true }).click()
     // Should show Anthropic at minimum
     await expect(page.locator('text=/anthropic/i').first()).toBeVisible({ timeout: 5000 })
   })
 
   test('Notifications tab shows toggles', async ({ page }) => {
-    const notifTab = page.getByRole('tab', { name: /notification/i })
-      .or(page.getByRole('button', { name: /notification/i }))
-    
-    if (await notifTab.isVisible()) {
-      await notifTab.click()
-      await page.waitForTimeout(1000)
-      // Should show toggle for job completion
-      const toggles = page.locator('[role="switch"], input[type="checkbox"]')
-      const count = await toggles.count()
-      expect(count).toBeGreaterThan(0)
-    }
+    await page.getByRole('tab', { name: 'Notifications', exact: true }).click()
+    const toggles = page.locator('[role="switch"], input[type="checkbox"]')
+    await expect(toggles.first()).toBeAttached({ timeout: 5000 })
   })
 
   test('Account tab shows profile email', async ({ page }) => {
-    const accountTab = page.getByRole('tab', { name: /account/i })
-      .or(page.getByRole('button', { name: /account/i }))
-    
-    if (await accountTab.isVisible()) {
-      await accountTab.click()
-      await page.waitForTimeout(1500)
-      // Should show the logged-in email
-      await expect(page.locator('text=/gmail\.com/').first()).toBeVisible({ timeout: 5000 })
-    }
+    await page.getByRole('tab', { name: 'Account', exact: true }).click()
+    await expect(page.locator('text=/gmail\.com/').first()).toBeVisible({ timeout: 5000 })
   })
 
   test('Voices tab shows voice entries', async ({ page }) => {
-    const voicesTab = page.getByRole('tab', { name: /voice/i })
-      .or(page.getByRole('button', { name: /voice/i }))
-    
-    if (await voicesTab.isVisible()) {
-      await voicesTab.click()
-      await page.waitForTimeout(2000)
-      // Should list voices
-      const voices = page.locator('[class*="voice"], text=/edge tts/i').first()
-      await expect(voices).toBeVisible({ timeout: 5000 })
+    const voicesTab = page.getByRole('tab', { name: 'Voices', exact: true })
+    await voicesTab.click()
+    await expect(voicesTab).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('text=/edge tts|neural|voice/i').first()).toBeVisible({ timeout: 8000 })
+  })
+
+  test('every settings tab opens without crashing', async ({ page }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (e) => pageErrors.push(e.message))
+    const labels = ['API Keys', 'Voices', 'Social Accounts', 'Scheduler', 'Automation',
+      'Integrations', 'Preferences', 'Notifications', 'Account']
+    for (const label of labels) {
+      const tab = page.getByRole('tab', { name: label, exact: true })
+      await tab.click()
+      await expect(tab).toHaveAttribute('aria-selected', 'true')
+      await expect(page.getByText('Something went wrong')).toHaveCount(0)
     }
+    expect(pageErrors).toHaveLength(0)
+  })
+
+  test('Preferences link switches to Notifications tab', async ({ page }) => {
+    await page.getByRole('tab', { name: 'Preferences', exact: true }).click()
+    await page.getByRole('button', { name: 'Settings → Notifications' }).click()
+    await expect(page.getByRole('tab', { name: 'Notifications', exact: true }))
+      .toHaveAttribute('aria-selected', 'true')
   })
 })

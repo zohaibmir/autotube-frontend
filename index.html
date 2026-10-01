@@ -4,7 +4,14 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>YouTube Automation</title>
+    <title>Channelpilot — AI YouTube Automation</title>
+    <!-- No static <meta name="description"> here on purpose: every route sets its own
+         via the <SEO> component (react-helmet-async). A static one here would sit
+         alongside the per-page one and produce two conflicting description tags in
+         the rendered DOM. Known trade-off: without server-side rendering/prerendering,
+         non-JS consumers (some social link-unfurlers) see no description at all before
+         hydration — search engines that execute JS (Google, Bing) see the correct
+         per-page one. Revisit with SSR/prerendering if social preview cards matter. -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">

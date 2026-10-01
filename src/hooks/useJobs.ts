@@ -10,7 +10,7 @@ export function useJobs(params?: { search?: string; status?: string }) {
   })
 }
 
-// ── Single job by ID — reads from cached list, overlays live status if running ──
+// ── Single job by ID - reads from cached list, overlays live status if running ──
 export function useJob(jobId: string | undefined) {
   const { data: allJobs = [], isLoading } = useJobs()
   const { data: live } = usePipelineStatus()
@@ -18,12 +18,9 @@ export function useJob(jobId: string | undefined) {
   const base = (allJobs as any[]).find((j) => j.job_id === jobId)
 
   // If this exact job is currently in the pipeline, overlay live progress
-  const isLive = Boolean(
-    jobId &&
-    live?.run_id === jobId ||
-    live?.job_id === jobId ||
-    (live?.status === 'running' && base?.status === 'running')
-  )
+const isLive = Boolean(
+  jobId && (live?.run_id === jobId || live?.job_id === jobId)
+)
   const job = base
     ? isLive
       ? { ...base, ...live, job_id: jobId }

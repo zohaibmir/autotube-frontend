@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   TrendingUp, Eye, Users, Clock, DollarSign, Play,
@@ -129,6 +129,11 @@ function VideoRow({ video }: { video: any }) {
         </span>
       </td>
       <td className="px-4 py-3 text-[12px] text-[#525252] text-right">{fmt(video.views)}</td>
+      <td className="px-4 py-3 text-[12px] text-[#525252] text-right">
+        {video.retention_pct !== undefined && video.retention_pct !== null && video.retention_pct > 0
+          ? `${video.retention_pct.toFixed(0)}%`
+          : '—'}
+      </td>
       <td className="px-4 py-3 text-[12px] text-[#525252] text-right">{fmtUSD(video.cost ?? video.total_cost)}</td>
     </tr>
   )
@@ -136,15 +141,40 @@ function VideoRow({ video }: { video: any }) {
 
 // ─── YPP Progress ─────────────────────────────────────────────────────────────
 
-function YppProgress({ ypp }: { ypp: any }) {
-  const hours    = ypp?.watch_hours ?? 0
-  const subs     = ypp?.subscribers ?? 0
+function YppProgress({
+  lifetime,
+  lifetimeLoading,
+  lifetimeErrored,
+  windowed,
+}: {
+  lifetime: any
+  lifetimeLoading: boolean
+  lifetimeErrored: boolean
+  windowed: any
+}) {
+  // Prefer real lifetime totals fetched live from YouTube; only fall back to our
+  // local rolling-30-days snapshot if the live call is still loading or failed outright.
+  const useLifetime = !lifetimeLoading && !lifetimeErrored && lifetime
+  const hours    = useLifetime ? (lifetime.watch_hours ?? 0) : (windowed?.watch_hours ?? 0)
+  const subs     = useLifetime ? (lifetime.subs ?? 0)        : (windowed?.subs ?? 0)
   const hoursPct = Math.min(Math.round((hours / 4000) * 100), 100)
   const subsPct  = Math.min(Math.round((subs  / 1000) * 100), 100)
 
+  let note = 'Approximate - based on the last 30 days synced, not full channel lifetime'
+  if (lifetimeLoading) {
+    note = 'Fetching real lifetime totals from YouTube…'
+  } else if (useLifetime) {
+    note = lifetime.error || (lifetime.skipped_channels?.length > 0)
+      ? 'Live lifetime totals from YouTube (partial - some channels/metrics unavailable)'
+      : 'Live lifetime totals from YouTube'
+  } else if (lifetimeErrored) {
+    note = 'Could not reach YouTube for lifetime totals - showing last 30 days synced instead'
+  }
+
   return (
     <div className="bg-white border border-[#E5E5E5] rounded-lg p-5">
-      <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-4">YPP Progress</p>
+      <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1">YPP Progress</p>
+      <p className="text-[10px] text-[#D4D4D4] mb-3">{note}</p>
       <div className="space-y-4">
         {[
           { label: 'Watch Hours', value: fmt(hours), target: '4,000', pct: hoursPct },
@@ -190,14 +220,27 @@ export default function AnalyticsPage() {
   const queryClient = useQueryClient()
   const toast = useToast()
   const [channelFilter,  setChannelFilter]  = useState('')
-  const [insightsOpen,   setInsightsOpen]   = useState(false)
+  const [channelFilterTouched, setChannelFilterTouched] = useState(false)
+  const [insightsOpen,   setInsightsOpen]   = useState(true)
   const [digestOpen,     setDigestOpen]     = useState(false)
-  const [insightsLoaded, setInsightsLoaded] = useState(false)
+  const [bestTimesOpen,  setBestTimesOpen]  = useState(false)
+  const [trafficOpen,    setTrafficOpen]    = useState(false)
+  const [insightsLoaded, setInsightsLoaded] = useState(true)
   const [digestLoaded,   setDigestLoaded]   = useState(false)
+  const [bestTimesLoaded, setBestTimesLoaded] = useState(false)
+  const [trafficLoaded,  setTrafficLoaded]  = useState(false)
+
+  // Default the channel filter to the user's default channel once channels load,
+  // unless the user has already made an explicit selection (including "All channels").
+  useEffect(() => {
+    if (channelFilterTouched || channels.length === 0) return
+    const defaultChannel: any = channels.find((ch: any) => ch.is_default)
+    if (defaultChannel) setChannelFilter(defaultChannel.slug)
+  }, [channels, channelFilterTouched])
 
   const statsQuery = useQuery({
-    queryKey: ['analytics-stats'],
-    queryFn:  analyticsApi.channelStats,
+    queryKey: ['analytics-stats', channelFilter],
+    queryFn:  () => analyticsApi.channelStats(channelFilter || undefined),
     staleTime: 60_000,
   })
   const costsQuery = useQuery({
@@ -211,9 +254,18 @@ export default function AnalyticsPage() {
     staleTime: 60_000,
   })
   const yppQuery = useQuery({
-    queryKey: ['analytics-ypp'],
-    queryFn:  analyticsApi.ypp,
+    queryKey: ['analytics-ypp', channelFilter],
+    queryFn:  () => analyticsApi.ypp(channelFilter || undefined),
     staleTime: 60_000,
+  })
+  // Live call to YouTube for real lifetime totals (see analytics_sync.get_lifetime_ypp_progress) --
+  // slower than the DB-derived yppQuery above, so it gets a longer staleTime and its own
+  // loading/error state that YppProgress falls back on gracefully.
+  const yppLifetimeQuery = useQuery({
+    queryKey: ['analytics-ypp-lifetime', channelFilter],
+    queryFn:  () => analyticsApi.yppLifetime(channelFilter || undefined),
+    staleTime: 15 * 60_000,
+    retry: 1,
   })
   const syncStatusQuery = useQuery({
     queryKey: ['analytics-sync-status'],
@@ -221,16 +273,29 @@ export default function AnalyticsPage() {
     staleTime: 120_000,
   })
   const insightsQuery = useQuery({
-    queryKey: ['analytics-insights'],
-    queryFn:  () => analyticsApi.insights(),
+    queryKey: ['analytics-insights', channelFilter],
+    queryFn:  () => analyticsApi.insights(channelFilter || undefined),
     staleTime: 300_000,
     enabled:  insightsLoaded,
   })
   const digestQuery = useQuery({
-    queryKey: ['analytics-digest'],
-    queryFn:  () => analyticsApi.digest(),
+    queryKey: ['analytics-digest', channelFilter],
+    queryFn:  () => analyticsApi.digest(channelFilter || undefined),
     staleTime: 300_000,
     enabled:  digestLoaded,
+  })
+  const bestTimesQuery = useQuery({
+    queryKey: ['analytics-best-times', channelFilter],
+    queryFn:  () => analyticsApi.bestTimes(channelFilter || undefined),
+    staleTime: 300_000,
+    enabled:  bestTimesLoaded,
+  })
+  const trafficQuery = useQuery({
+    queryKey: ['analytics-traffic-sources', channelFilter],
+    queryFn:  () => analyticsApi.trafficSources(channelFilter),
+    staleTime: 300_000,
+    enabled:  trafficLoaded && !!channelFilter,
+    retry: 1,
   })
 
   const syncMutation = useMutation({
@@ -243,7 +308,7 @@ export default function AnalyticsPage() {
       queryClient.invalidateQueries({ queryKey: ['analytics-ypp'],     exact: false })
       queryClient.invalidateQueries({ queryKey: ['analytics-sync-status'], exact: false })
     },
-    onError: () => toast.error('Sync failed — check YouTube OAuth in Channels'),
+    onError: () => toast.error('Sync failed - check YouTube OAuth in Channels'),
   })
 
   const stats  = statsQuery.data  ?? {}
@@ -273,6 +338,11 @@ export default function AnalyticsPage() {
   // Insights data
   const insightPoints: any[] = (insightsQuery.data as any)?.insights ?? []
   const digestText: string    = (digestQuery.data as any)?.digest ?? ''
+  const bestTimes: any[] = (bestTimesQuery.data as any)?.recommendations ?? []
+  const bestTimesHasEnoughData = !!(bestTimesQuery.data as any)?.has_enough_data
+  const trafficSources: [string, number][] = Object.entries((trafficQuery.data as any)?.sources ?? {})
+    .sort((a: any, b: any) => b[1] - a[1]) as [string, number][]
+  const trafficTotal = trafficSources.reduce((s, [, v]) => s + v, 0)
 
   // Sync status
   const lastSynced: string | null = (syncStatusQuery.data as any)?.last_sync ?? null
@@ -323,23 +393,21 @@ export default function AnalyticsPage() {
           icon={<Play size={16} strokeWidth={1.5} />}
         />
         <StatCard
-          label="Total Views"
-          value={loading ? '—' : fmt(stats.total_views ?? ypp.views)}
-          sub={stats.views_30d ? `+${fmt(stats.views_30d)} this month` : undefined}
+          label="Views"
+          value={loading ? '—' : fmt(stats.total_views)}
+          sub="last 30 days synced"
           icon={<Eye size={16} strokeWidth={1.5} />}
-          trend={stats.views_trend}
         />
         <StatCard
-          label="Subscribers"
-          value={loading ? '—' : fmt(stats.subscribers ?? ypp.subscribers)}
-          sub={stats.subs_gained_30d ? `+${fmt(stats.subs_gained_30d)} this month` : undefined}
+          label="Subscribers Gained"
+          value={loading ? '—' : fmt(stats.total_subs ?? ypp.subs)}
+          sub="last 30 days synced"
           icon={<Users size={16} strokeWidth={1.5} />}
-          trend={stats.subs_trend}
         />
         <StatCard
           label="Watch Hours"
-          value={loading ? '—' : fmt(stats.watch_hours ?? ypp.watch_hours)}
-          sub="total"
+          value={loading ? '—' : fmt(stats.total_watch_hours ?? ypp.watch_hours)}
+          sub="last 30 days synced"
           icon={<Clock size={16} strokeWidth={1.5} />}
         />
       </div>
@@ -350,7 +418,10 @@ export default function AnalyticsPage() {
         {/* API cost breakdown (2/3 width) */}
         <div className="lg:col-span-2 bg-white border border-[#E5E5E5] rounded-lg p-5">
           <div className="flex items-center justify-between mb-4">
-            <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest">API Cost Breakdown</p>
+            <div>
+              <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest">API Cost Breakdown</p>
+              <p className="text-[10px] text-[#D4D4D4] mt-0.5">All channels (costs aren't tracked per channel)</p>
+            </div>
             <span className="text-[13px] font-semibold text-[#0A0A0A]">{fmtUSD(totalCost)} total</span>
           </div>
           {costsQuery.isLoading ? (
@@ -389,7 +460,12 @@ export default function AnalyticsPage() {
             </div>
           </div>
         ) : (
-          <YppProgress ypp={ypp} />
+          <YppProgress
+            lifetime={yppLifetimeQuery.data}
+            lifetimeLoading={yppLifetimeQuery.isLoading}
+            lifetimeErrored={yppLifetimeQuery.isError}
+            windowed={ypp}
+          />
         )}
       </div>
 
@@ -405,7 +481,7 @@ export default function AnalyticsPage() {
           {channels.length > 0 && (
             <select
               value={channelFilter}
-              onChange={(e) => setChannelFilter(e.target.value)}
+              onChange={(e) => { setChannelFilter(e.target.value); setChannelFilterTouched(true) }}
               className="h-6 pl-2 pr-5 text-[11px] bg-[#FAFAFA] border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
             >
               <option value="">All channels</option>
@@ -436,7 +512,7 @@ export default function AnalyticsPage() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[#F5F5F5]">
-                  {['Topic', 'Date', 'Status', 'Views', 'Cost'].map((h, i) => (
+                  {['Topic', 'Date', 'Status', 'Views', 'Retention', 'Cost'].map((h, i) => (
                     <th
                       key={h}
                       className={`px-4 py-2.5 text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest ${i >= 3 ? 'text-right' : 'text-left'}`}
@@ -455,30 +531,152 @@ export default function AnalyticsPage() {
           </div>
         )}
       </div>
-
-      {/* ── AI Insights ─────────────────────────────────────────────────── */}
+      {/* ── Best Time to Publish ───────────────────────────────────── */}
       <div className="mt-4 bg-white border border-[#E5E5E5] rounded-lg overflow-hidden">
+        <button
+          onClick={() => {
+            setBestTimesOpen(!bestTimesOpen)
+            if (!bestTimesLoaded) setBestTimesLoaded(true)
+          }}
+          className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-[#FAFAFA] transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <Clock size={13} strokeWidth={1.5} className="text-[#0A0A0A]" />
+            <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest">Best Time to Publish</p>
+            {bestTimesLoaded && bestTimesQuery.isLoading && (
+              <Loader2 size={11} strokeWidth={1.5} className="animate-spin text-[#A3A3A3]" />
+            )}
+          </div>
+          {bestTimesOpen
+            ? <ChevronUp size={13} strokeWidth={1.5} className="text-[#A3A3A3]" />
+            : <ChevronDown size={13} strokeWidth={1.5} className="text-[#A3A3A3]" />
+          }
+        </button>
+        {bestTimesOpen && (
+          <div className="border-t border-[#E5E5E5] px-5 py-4">
+            {!bestTimesLoaded || bestTimesQuery.isLoading ? (
+              <div className="flex items-center gap-2 py-2">
+                <Loader2 size={13} strokeWidth={1.5} className="animate-spin text-[#A3A3A3]" />
+                <span className="text-[12px] text-[#A3A3A3]">Analyzing publish history…</span>
+              </div>
+            ) : bestTimes.length === 0 ? (
+              <p className="text-[12px] text-[#A3A3A3] py-2">
+                No publish history yet - sync from YouTube first, or publish a few videos to build a recommendation.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {!bestTimesHasEnoughData && (
+                  <p className="text-[11px] text-[#D97706] bg-[#FFFBEB] rounded px-2.5 py-1.5">
+                    Early estimate - based on a small sample so far. Recommendations will sharpen as you publish more.
+                  </p>
+                )}
+                <p className="text-[12px] text-[#525252]">
+                  Ranked by views-per-day-since-publish (not raw views), so newer videos aren't unfairly outranked by older ones that simply had more time to accumulate views.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {bestTimes.map((bt: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between border border-[#E5E5E5] rounded-lg px-3 py-2.5">
+                      <div>
+                        <p className="text-[13px] font-semibold text-[#0A0A0A]">{bt.day} · {bt.time_block}</p>
+                        <p className="text-[10px] text-[#A3A3A3]">{bt.sample_size} video{bt.sample_size !== 1 ? 's' : ''}</p>
+                      </div>
+                      <span className="text-[11px] font-medium text-[#525252]">{bt.avg_velocity} views/day</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      {/* ── Traffic Sources ───────────────────────────────────────── */}
+      <div className="mt-4 bg-white border border-[#E5E5E5] rounded-lg overflow-hidden">
+        <button
+          onClick={() => {
+            setTrafficOpen(!trafficOpen)
+            if (!trafficLoaded) setTrafficLoaded(true)
+          }}
+          disabled={!channelFilter}
+          className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-[#FAFAFA] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <div className="flex items-center gap-2">
+            <TrendingUp size={13} strokeWidth={1.5} className="text-[#0A0A0A]" />
+            <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest">Traffic Sources</p>
+            {trafficLoaded && trafficQuery.isLoading && (
+              <Loader2 size={11} strokeWidth={1.5} className="animate-spin text-[#A3A3A3]" />
+            )}
+          </div>
+          {trafficOpen
+            ? <ChevronUp size={13} strokeWidth={1.5} className="text-[#A3A3A3]" />
+            : <ChevronDown size={13} strokeWidth={1.5} className="text-[#A3A3A3]" />
+          }
+        </button>
+        {!channelFilter && (
+          <p className="px-5 pb-3 text-[11px] text-[#A3A3A3]">Select a specific channel above to see its traffic sources.</p>
+        )}
+        {trafficOpen && channelFilter && (
+          <div className="border-t border-[#E5E5E5] px-5 py-4">
+            {!trafficLoaded || trafficQuery.isLoading ? (
+              <div className="flex items-center gap-2 py-2">
+                <Loader2 size={13} strokeWidth={1.5} className="animate-spin text-[#A3A3A3]" />
+                <span className="text-[12px] text-[#A3A3A3]">Fetching traffic sources from YouTube…</span>
+              </div>
+            ) : trafficSources.length === 0 ? (
+              <p className="text-[12px] text-[#A3A3A3] py-2">
+                No traffic source data yet - this channel may need more views in the last 30 days.
+              </p>
+            ) : (
+              <div className="space-y-2.5">
+                <p className="text-[11px] text-[#A3A3A3] mb-1">Channel-wide, last 30 days - live from YouTube</p>
+                {trafficSources.map(([source, views]: [string, number]) => {
+                  const pct = trafficTotal > 0 ? Math.round((views / trafficTotal) * 100) : 0
+                  return (
+                    <div key={source} className="flex items-center gap-3">
+                      <span className="text-[12px] text-[#0A0A0A] w-36 flex-shrink-0 capitalize">
+                        {source.replace(/_/g, ' ').toLowerCase()}
+                      </span>
+                      <div className="flex-1 h-1.5 bg-[#F5F5F5] rounded-full overflow-hidden">
+                        <div className="h-full rounded-full bg-[#0A0A0A]" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-[11px] text-[#A3A3A3] w-16 text-right">{fmt(views)} ({pct}%)</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      {/* ── AI Growth Coach (headline feature - auto-expanded, visually distinct
+           from the other collapsible cards below; this is the differentiator vs.
+           vidIQ/TubeBuddy's static checklists, see FEATURE_PRIORITY_ROADMAP.md P2 #18) ── */}
+      <div className="mt-4 bg-[#0A0A0A] rounded-lg overflow-hidden">
         <button
           onClick={() => {
             setInsightsOpen(!insightsOpen)
             if (!insightsLoaded) setInsightsLoaded(true)
           }}
-          className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-[#FAFAFA] transition-colors"
+          className="w-full flex items-center justify-between px-5 py-4 hover:bg-[#171717] transition-colors"
         >
-          <div className="flex items-center gap-2">
-            <Sparkles size={13} strokeWidth={1.5} className="text-[#0A0A0A]" />
-            <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest">AI Insights</p>
+          <div className="flex items-center gap-2.5">
+            <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center">
+              <Sparkles size={12} strokeWidth={1.5} className="text-white" />
+            </div>
+            <div className="text-left">
+              <p className="text-[12px] font-semibold text-white">AI Growth Coach</p>
+              <p className="text-[10px] text-white/50">Personalized, data-grounded recommendations - not a generic checklist</p>
+            </div>
             {insightsLoaded && insightsQuery.isLoading && (
-              <Loader2 size={11} strokeWidth={1.5} className="animate-spin text-[#A3A3A3]" />
+              <Loader2 size={11} strokeWidth={1.5} className="animate-spin text-white/50" />
             )}
           </div>
           {insightsOpen
-            ? <ChevronUp size={13} strokeWidth={1.5} className="text-[#A3A3A3]" />
-            : <ChevronDown size={13} strokeWidth={1.5} className="text-[#A3A3A3]" />
+            ? <ChevronUp size={13} strokeWidth={1.5} className="text-white/50" />
+            : <ChevronDown size={13} strokeWidth={1.5} className="text-white/50" />
           }
         </button>
         {insightsOpen && (
-          <div className="border-t border-[#E5E5E5] px-5 py-4">
+          <div className="border-t border-white/10 px-5 py-4 bg-white">
             {!insightsLoaded || insightsQuery.isLoading ? (
               <div className="flex items-center gap-2 py-2">
                 <Loader2 size={13} strokeWidth={1.5} className="animate-spin text-[#A3A3A3]" />
@@ -486,7 +684,7 @@ export default function AnalyticsPage() {
               </div>
             ) : insightPoints.length === 0 ? (
               <p className="text-[12px] text-[#A3A3A3] py-2">
-                No insights yet — sync from YouTube first to generate performance data.
+                No insights yet - sync from YouTube first to generate performance data.
               </p>
             ) : (
               <div className="space-y-4">
@@ -547,7 +745,7 @@ export default function AnalyticsPage() {
               </div>
             ) : !digestText ? (
               <p className="text-[12px] text-[#A3A3A3] py-2">
-                No digest available — sync from YouTube to generate a weekly summary.
+                No digest available - sync from YouTube to generate a weekly summary.
               </p>
             ) : (
               <div>

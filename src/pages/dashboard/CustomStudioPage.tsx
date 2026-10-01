@@ -464,7 +464,7 @@ export default function CustomStudioPage() {
               {narrationMode === 'ai' && (
                 <div>
                   <label className="block text-[11px] text-[#A3A3A3] mb-1.5">
-                    Voice ID <span className="font-normal">(optional — leave blank for default)</span>
+                    Voice ID <span className="font-normal">(optional - leave blank for default)</span>
                   </label>
                   <input
                     type="text"
@@ -644,7 +644,7 @@ export default function CustomStudioPage() {
           </div>
         )}
 
-        {/* Status panel — always visible below when active */}
+        {/* Status panel - always visible below when active */}
         <StatusPanel channelSlug={channelSlug} />
 
       </div>

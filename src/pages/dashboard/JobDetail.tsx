@@ -1,13 +1,16 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import {
   ArrowLeft, CheckCircle, Circle, Loader, XCircle,
   RotateCcw, X, ExternalLink, AlertCircle, Clock,
-  Copy, Check, FastForward, Timer,
+  Copy, Check, FastForward, Timer, UploadCloud,
 } from 'lucide-react'
-import { useJob, useJobAction } from '@hooks/useJobs'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useJob, useJobAction, useChannels } from '@hooks/useJobs'
+import { jobsApi } from '@api/services'
+import { useToast } from '@components/Toast'
 
-// ── Pipeline stages — keyed to job.current_step values ───────────────────────
+// ── Pipeline stages - keyed to job.current_step values ───────────────────────
 const STAGES = [
   { key: 'script',  label: 'Script Generation', keys: ['script', 'content', 'prompt'] },
   { key: 'audio',   label: 'Audio & Voiceover',  keys: ['audio', 'voice', 'tts', 'music'] },
@@ -22,7 +25,7 @@ function matchStage(currentStep: string | undefined): number {
   return STAGES.findIndex((s) => s.keys.some((k) => step.includes(k)))
 }
 
-// ── Stage icon — Nordic tokens only ─────────────────────────────────────────
+// ── Stage icon - Nordic tokens only ─────────────────────────────────────────
 type StageState = 'done' | 'active' | 'error' | 'pending'
 
 function StageIcon({ state }: { state: StageState }) {
@@ -54,7 +57,7 @@ function computeDuration(job: any): string | null {
   return null
 }
 
-// ── Error insight — maps known error patterns to friendly guidance ─────────────
+// ── Error insight - maps known error patterns to friendly guidance ─────────────
 function errorInsight(errorMsg: string): string {
   const msg = (errorMsg || '').toLowerCase()
   if (msg.includes('api key') || msg.includes('anthropic') || msg.includes('401') || msg.includes('invalid key'))
@@ -64,7 +67,7 @@ function errorInsight(errorMsg: string): string {
   if (msg.includes('upload') || msg.includes('youtube') || msg.includes('oauth') || msg.includes('token'))
     return 'YouTube auth may need refreshing. Go to Channels and reset auth.'
   if (msg.includes('ffmpeg') || msg.includes('render') || msg.includes('encode'))
-    return 'Render failed — usually a disk space or corrupt clip issue. Retry or check server logs.'
+    return 'Render failed - usually a disk space or corrupt clip issue. Retry or check server logs.'
   if (msg.includes('pexels') || msg.includes('visual') || msg.includes('download'))
     return 'Failed fetching video clips. Check your Pexels API key or network connectivity.'
   return 'Review the error below and retry. If it persists, check the server logs.'
@@ -72,6 +75,8 @@ function errorInsight(errorMsg: string): string {
 
 const statusConfig: Record<string, { label: string; pill: string; icon: React.ReactNode }> = {
   running:     { label: 'Running',     pill: 'bg-[#EFF6FF] text-[#2563EB] border border-[#BFDBFE]',  icon: <Loader size={12} strokeWidth={1.5} className="animate-spin" /> },
+  ready:       { label: 'Ready for review', pill: 'bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]', icon: <UploadCloud size={12} strokeWidth={1.5} /> },
+  uploading:   { label: 'Uploading',   pill: 'bg-[#EFF6FF] text-[#2563EB] border border-[#BFDBFE]',  icon: <Loader size={12} strokeWidth={1.5} className="animate-spin" /> },
   done:        { label: 'Done',        pill: 'bg-[#F0FDF4] text-[#16A34A] border border-[#BBF7D0]', icon: <CheckCircle size={12} strokeWidth={1.5} /> },
   error:       { label: 'Error',       pill: 'bg-[#FFF1F2] text-[#BE123C] border border-[#FECDD3]', icon: <XCircle size={12} strokeWidth={1.5} /> },
   interrupted: { label: 'Interrupted', pill: 'bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]', icon: <AlertCircle size={12} strokeWidth={1.5} /> },
@@ -84,6 +89,27 @@ export default function JobDetail() {
   const { job, isLoading } = useJob(jobId)
   const { mutate: runAction, isPending: acting } = useJobAction()
   const [copied, setCopied] = useState(false)
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  const { data: channels = [] } = useChannels()
+  const [uploadChannel, setUploadChannel] = useState('')
+  const [uploadPrivacy, setUploadPrivacy] = useState<'public' | 'unlisted' | 'private'>('public')
+
+  const uploadMutation = useMutation({
+    mutationFn: () => jobsApi.upload({ channel_slug: uploadChannel || undefined, privacy_status: uploadPrivacy, job_id: jobId }),
+    onSuccess: () => {
+      toast.success('Uploaded to YouTube!')
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      queryClient.invalidateQueries({ queryKey: ['pipeline', 'status'] })
+    },
+    onError: (err: any) => {
+      // Surface the real backend reason (e.g. "No video ready (status: done)"
+      // when this job is no longer the server's active in-memory pipeline run)
+      // instead of a generic message that hides why it failed.
+      const detail = err?.response?.data?.detail
+      toast.error(typeof detail === 'string' ? detail : 'Upload failed - check the server logs')
+    },
+  })
 
   const currentStep = job?.current_step || job?.stage || ''
   // The live overlay (/api/pipeline/status) has no current_step/progress fields —
@@ -95,7 +121,7 @@ export default function JobDetail() {
   const displayStep = (job?.status === 'running' && job?.message) ? job.message : currentStep
   const activeIdx = job?.status === 'done'
     // A "done" job has all pipeline work complete. But YouTube Upload (the last
-    // stage) should only be marked ✅ if there is actually a youtube_id — it's
+    // stage) should only be marked ✅ if there is actually a youtube_id - it's
     // legitimately skipped when the job ran without a channel_slug.
     // STAGES.length   → marks every stage (including upload) complete
     // STAGES.length-1 → marks only stages 0-3 complete, upload stays pending
@@ -124,6 +150,18 @@ export default function JobDetail() {
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
+
+  useEffect(() => {
+    if (job?.channel_slug && !uploadChannel) setUploadChannel(job.channel_slug)
+  }, [job?.channel_slug, uploadChannel])
+
+  // Show the manual upload panel whenever there's a built video with no
+  // youtube_id yet - either explicitly "ready for review", or a "done" job
+  // that completed without uploading (e.g. no channel was assigned at run
+  // time, or the upload step failed/was skipped for some other reason).
+  // A channel being assigned now (job.channel_slug, or one picked here) is
+  // enough to upload - we don't gate the option on why it didn't happen.
+  const readyToUpload = job?.status === 'ready' || (job?.status === 'done' && !job?.youtube_id)
 
   return (
     <div className="min-h-screen bg-[#FAFAFA]">
@@ -158,7 +196,7 @@ export default function JobDetail() {
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <p className="text-[11px] text-[#A3A3A3] font-medium uppercase tracking-widest mb-1">
-                    {/^\[short\]/i.test(job.topic || '') ? 'Short' : 'Long-form'}
+                    {/\[short\]/i.test(job.topic || '') ? 'Short' : 'Long-form'}
                   </p>
                   <h2 className="text-lg font-semibold text-[#0A0A0A] leading-snug truncate" title={topicLabel}>
                     {topicLabel}
@@ -199,7 +237,7 @@ export default function JobDetail() {
                     </div>
                   ) : (
                     // No numeric progress is reported by the backend for a running
-                    // job (see comment above `displayStep`) — show an indeterminate
+                    // job (see comment above `displayStep`) - show an indeterminate
                     // pulsing bar instead of a misleading static "0%" fill.
                     <div className="h-1 bg-[#F5F5F5] rounded-full overflow-hidden">
                       <div className="h-full w-1/3 bg-[#0A0A0A] rounded-full animate-pulse" />
@@ -217,8 +255,9 @@ export default function JobDetail() {
                   let state: StageState = 'pending'
                   if (job.status === 'done') {
                     // Upload stage is only "done" when a youtube_id is recorded;
-                    // without one the pipeline completed but skipped the upload
-                    // (no channel assigned). All other stages are done normally.
+                    // without one the pipeline completed but the upload hasn't
+                    // happened yet (channel may or may not be assigned - see
+                    // the sub-label below, which reflects the real reason).
                     if (idx < STAGES.length - 1) {
                       state = 'done'
                     } else {
@@ -231,7 +270,9 @@ export default function JobDetail() {
                   }
 
                   const isLast = idx === STAGES.length - 1
-                  // Human-readable sub-label for the upload stage when skipped
+                  // Human-readable sub-label for the upload stage when not yet
+                  // uploaded - only claim "no channel assigned" when that's
+                  // actually true; otherwise point at the upload panel below.
                   const uploadSkipped = stage.key === 'upload' && job.status === 'done' && !job.youtube_id
 
                   return (
@@ -261,7 +302,11 @@ export default function JobDetail() {
                           <p className="text-xs text-[#A3A3A3] mt-0.5">Complete</p>
                         )}
                         {uploadSkipped && (
-                          <p className="text-xs text-[#B45309] mt-0.5">Skipped — no channel assigned</p>
+                          <p className="text-xs text-[#B45309] mt-0.5">
+                            {job.channel_slug
+                              ? 'Not uploaded yet - publish it below'
+                              : 'Skipped - no channel assigned. Pick one below to publish.'}
+                          </p>
                         )}
                         {state === 'error' && (
                           <p className="text-xs text-[#BE123C] mt-0.5">{job.error || 'Failed at this stage'}</p>
@@ -273,7 +318,7 @@ export default function JobDetail() {
               </div>
             </div>
 
-            {/* Error detail card — shown when job errored or was interrupted */}
+            {/* Error detail card - shown when job errored or was interrupted */}
             {(job.status === 'error' || job.status === 'interrupted') && job.error && (
               <div className="bg-white border border-[#FECDD3] rounded-md p-5">
                 <div className="flex items-start gap-3 mb-3">
@@ -297,6 +342,58 @@ export default function JobDetail() {
                     }
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* Upload to YouTube - shown once the video is built and awaiting review/publish */}
+            {readyToUpload && (
+              <div className="bg-white border border-[#FDE68A] rounded-md p-5">
+                <div className="flex items-start gap-3 mb-4">
+                  <UploadCloud size={16} strokeWidth={1.5} className="text-[#B45309] flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-[13px] font-semibold text-[#0A0A0A] mb-0.5">
+                      {job.status === 'done' ? 'Video not yet uploaded' : 'Video ready for review'}
+                    </p>
+                    <p className="text-[12px] text-[#525252]">Pick a channel and privacy setting, then publish to YouTube.</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div>
+                    <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Channel</label>
+                    <select
+                      value={uploadChannel}
+                      onChange={(e) => setUploadChannel(e.target.value)}
+                      className="w-full h-8 px-2 text-[12px] bg-[#FAFAFA] border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors"
+                    >
+                      <option value="">Default channel</option>
+                      {(channels as any[]).map((ch) => (
+                        <option key={ch.slug} value={ch.slug}>{ch.name ?? ch.slug}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Privacy</label>
+                    <select
+                      value={uploadPrivacy}
+                      onChange={(e) => setUploadPrivacy(e.target.value as any)}
+                      className="w-full h-8 px-2 text-[12px] bg-[#FAFAFA] border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors"
+                    >
+                      <option value="public">Public</option>
+                      <option value="unlisted">Unlisted</option>
+                      <option value="private">Private</option>
+                    </select>
+                  </div>
+                </div>
+                <button
+                  onClick={() => uploadMutation.mutate()}
+                  disabled={uploadMutation.isPending}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-md bg-[#0A0A0A] text-white hover:bg-[#262626] text-sm font-medium transition-colors disabled:opacity-50"
+                >
+                  {uploadMutation.isPending
+                    ? <><Loader size={13} strokeWidth={1.5} className="animate-spin" /> Uploading…</>
+                    : <><UploadCloud size={13} strokeWidth={1.5} /> Upload to YouTube</>
+                  }
+                </button>
               </div>
             )}
 

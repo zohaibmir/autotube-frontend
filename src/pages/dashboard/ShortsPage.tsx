@@ -413,7 +413,7 @@ function ScriptMode({ channels }: { channels: Array<{ slug: string; name?: strin
           onClick={() => setSeoOpen(v => !v)}
           className="w-full flex items-center justify-between px-4 py-2.5 text-[12px] font-medium text-[#525252] hover:bg-[#FAFAFA] transition-colors"
         >
-          <span>SEO — Title, Description, Tags</span>
+          <span>SEO - Title, Description, Tags</span>
           {seoOpen ? <ChevronDown size={13} strokeWidth={1.5} /> : <ChevronRight size={13} strokeWidth={1.5} />}
         </button>
         {seoOpen && (
@@ -524,7 +524,7 @@ function AnimatedMode() {
       })
       if (res.ok && res.job_id) {
         setActiveJobs(j => [...j, res.job_id])
-        toast.success(`Clip generation started — job ${res.job_id}`)
+        toast.success(`Clip generation started - job ${res.job_id}`)
       } else {
         toast.error('Failed to start generation')
       }
@@ -572,7 +572,7 @@ function AnimatedMode() {
 
       {/* Context hint */}
       <div>
-        <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Context <span className="font-normal normal-case tracking-normal">(optional — improves scene quality)</span></label>
+        <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Context <span className="font-normal normal-case tracking-normal">(optional - improves scene quality)</span></label>
         <input
           value={context}
           onChange={e => setContext(e.target.value)}
@@ -601,7 +601,7 @@ function AnimatedMode() {
         <div className="border border-[#E5E5E5] rounded-lg overflow-hidden">
           {scenes.length === 0 ? (
             <div className="py-8 text-center text-[12px] text-[#A3A3A3]">
-              No scenes yet — click "Generate Scenes with AI" or add manually
+              No scenes yet - click "Generate Scenes with AI" or add manually
             </div>
           ) : (
             <div className="divide-y divide-[#F5F5F5]">
@@ -668,7 +668,7 @@ function AnimatedMode() {
           ))}
         </div>
         {platforms.length === 0 && (
-          <p className="text-[10px] text-[#D97706] mt-1">Select at least one platform — clips will be generated but not distributed automatically</p>
+          <p className="text-[10px] text-[#D97706] mt-1">Select at least one platform - clips will be generated but not distributed automatically</p>
         )}
       </div>
 

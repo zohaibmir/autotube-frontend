@@ -34,14 +34,14 @@ test.describe('Authentication', () => {
   })
 
   test('invalid credentials show error message', async ({ page }) => {
-    await page.goto(BASE_URL + '/login')
+    // Wait for the initial session check to settle; it can re-render the form
+    await page.goto(BASE_URL + '/login', { waitUntil: 'networkidle' })
     await page.fill('input[type="email"]', TEST_EMAIL)
     await page.fill('input[type="password"]', 'wrong_password_xyz')
+    await expect(page.locator('input[type="password"]')).toHaveValue('wrong_password_xyz')
     await page.getByRole('button', { name: /sign in/i }).click()
-    // Expect an error toast or inline error within 8s
-    await expect(
-      page.locator('[class*="error"], [class*="red"], [role="alert"]').first()
-    ).toBeVisible({ timeout: 8000 })
+    // Expect the inline alert with the backend's message within 8s
+    await expect(page.getByRole('alert')).toContainText(/invalid|incorrect|wrong/i, { timeout: 8000 })
   })
 
   test('valid login redirects to dashboard', async ({ page }) => {

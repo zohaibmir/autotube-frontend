@@ -26,7 +26,7 @@ function _toUser(u: any, fallback?: Partial<User>): User {
 
 /**
  * Fetch the authoritative role/plan from /api/auth/me and update the store +
- * cached user. Login/signup responses only return {id, email, name} — without
+ * cached user. Login/signup responses only return {id, email, name} - without
  * this, a freshly logged-in super_admin/unlimited user would be stuck showing
  * as role='user'/plan='free' until a full page reload re-ran syncSession().
  */
@@ -39,7 +39,7 @@ async function _refreshFromMe(set: (partial: Partial<AuthStore>) => void, fallba
     tokenStore.setUser(user as StoredUser)
     set({ user })
   } catch {
-    // Best effort — keep whatever user state was already set from login/signup.
+    // Best effort - keep whatever user state was already set from login/signup.
   }
 }
 

@@ -2,7 +2,7 @@ import React, { lazy, Suspense } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import DashboardLayout from '@components/DashboardLayout'
 
-// ── Lazy page imports — each route becomes its own JS chunk ──────────────────
+// ── Lazy page imports - each route becomes its own JS chunk ──────────────────
 const DashboardHome     = lazy(() => import('./dashboard/DashboardHome'))
 const JobsList          = lazy(() => import('./dashboard/JobsList'))
 const JobDetail         = lazy(() => import('./dashboard/JobDetail'))
@@ -21,9 +21,11 @@ const KidsPage          = lazy(() => import('./dashboard/KidsPage'))
 const AdminPage         = lazy(() => import('./dashboard/AdminPage'))
 const CommunityPage     = lazy(() => import('./dashboard/CommunityPage'))
 const ShortsPage        = lazy(() => import('./dashboard/ShortsPage'))
+const SeoGeneratorPage  = lazy(() => import('./dashboard/SeoGeneratorPage'))
 const CreateLayout      = lazy(() => import('./create/CreateLayout'))
 const IdeasPage         = lazy(() => import('./create/IdeasPage'))
 const ScriptPage        = lazy(() => import('./create/ScriptPage'))
+const VisualsPage       = lazy(() => import('./create/VisualsPage'))
 const SeoPage           = lazy(() => import('./create/SeoPage'))
 const ThumbnailPage     = lazy(() => import('./create/ThumbnailPage'))
 const SubmitPage        = lazy(() => import('./create/SubmitPage'))
@@ -67,10 +69,12 @@ export default function DashboardPage() {
           <Route path="/admin" element={<AdminPage />} />
           <Route path="/community" element={<CommunityPage />} />
           <Route path="/shorts" element={<ShortsPage />} />
+          <Route path="/seo-generator" element={<SeoGeneratorPage />} />
           <Route path="/create" element={<CreateLayout />}>
             <Route index element={<IdeasPage />} />
             <Route path="ideas" element={<IdeasPage />} />
             <Route path="script" element={<ScriptPage />} />
+            <Route path="visuals" element={<VisualsPage />} />
             <Route path="seo" element={<SeoPage />} />
             <Route path="thumbnail" element={<ThumbnailPage />} />
             <Route path="submit" element={<SubmitPage />} />

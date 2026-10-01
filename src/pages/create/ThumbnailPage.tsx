@@ -120,7 +120,7 @@ export default function ThumbnailPage() {
       if (res?.ok && res.b64) {
         setDataUrl(`data:${res.mime ?? 'image/jpeg'};base64,${res.b64}`)
       } else {
-        toast.error('No Pexels images found — check your Pexels API key in Settings')
+        toast.error('No Pexels images found - check your Pexels API key in Settings')
       }
     },
     onError: () => toast.error('Pexels search failed'),
@@ -166,7 +166,7 @@ export default function ThumbnailPage() {
     if (dataUrl) {
       setThumbnailData({ dataUrl, title, mode: bgMode })
     }
-    setStep(5)
+    setStep(6)
     navigate('/app/create/submit')
   }
 
@@ -227,7 +227,7 @@ export default function ThumbnailPage() {
         {bgMode === 'ai' && (
           <div className="space-y-3">
             <p className="text-[12px] text-[#525252]">
-              Generate a dramatic AI background using Pollinations — no API key required.
+              Generate a dramatic AI background using Pollinations - no API key required.
             </p>
             <button
               onClick={() => aiBgMutation.mutate()}
@@ -291,7 +291,7 @@ export default function ThumbnailPage() {
             <p className="text-[12px] text-[#525252] text-center">
               Drag &amp; drop an image or <span className="text-[#0A0A0A] font-medium">click to browse</span>
             </p>
-            <p className="text-[10px] text-[#A3A3A3]">PNG, JPEG, WEBP — 1280×720 recommended</p>
+            <p className="text-[10px] text-[#A3A3A3]">PNG, JPEG, WEBP - 1280×720 recommended</p>
             <input
               ref={fileRef}
               type="file"

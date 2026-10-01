@@ -121,7 +121,7 @@ function QueueRow({
         </span>
       )}
 
-      {/* Actions — visible on hover */}
+      {/* Actions - visible on hover */}
       <div className="flex-shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           onClick={() => onRunNow(item)}
@@ -372,7 +372,7 @@ function BulkAddModal({
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-// Stable empty-array reference — using an inline `[]` default in the `useQuery`
+// Stable empty-array reference - using an inline `[]` default in the `useQuery`
 // destructure below creates a NEW array on every render whenever `data` is
 // undefined, which changes identity every render. Combined with the
 // `useEffect(..., [rawQueue])` further down, that caused an infinite
@@ -386,7 +386,7 @@ export default function QueuePage() {
   const { data: rawChannels = [] } = useChannels()
   const channels = rawChannels as Array<{ channel_slug: string; display_name?: string; name?: string }>
 
-  // Per-channel filter — '' means all channels
+  // Per-channel filter - '' means all channels
   const [filterSlug, setFilterSlug] = useState<string>('')
 
   const { data: rawQueue = EMPTY_QUEUE, isLoading, isError, refetch } = useQueue(filterSlug || undefined)
@@ -507,7 +507,7 @@ export default function QueuePage() {
   }
 
   // ── Error state ──────────────────────────────────────────────────────────────
-  // Must be checked before the empty-state fallback below — otherwise a failed
+  // Must be checked before the empty-state fallback below - otherwise a failed
   // fetch silently renders "Queue is empty", misleading the user into thinking
   // they have no pending topics when the real issue is a network/server error.
   if (isError && !isLoading) {

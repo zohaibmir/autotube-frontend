@@ -26,6 +26,7 @@ const ROUTES: Array<{ path: string; expectText: RegExp | string }> = [
   { path: '/app/billing',           expectText: /billing|plan|usage/i },
   { path: '/app/admin',             expectText: /admin|analytics|digest/i },
   { path: '/app/create/ideas',      expectText: /idea|trend|topic/i },
+  { path: '/app/seo-generator',     expectText: /seo|video topic/i },
 ]
 
 test.describe('Navigation smoke tests', () => {

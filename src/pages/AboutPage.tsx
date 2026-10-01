@@ -1,6 +1,7 @@
 import React from 'react'
 import Navbar from '@components/Navbar'
 import Footer from '@components/Footer'
+import SEO from '@components/SEO'
 
 const values = [
   { title: 'Honesty first', description: 'We tell you what the AI can and cannot do. No overpromising, no dark patterns. What you see is what you get.' },
@@ -27,6 +28,11 @@ export default function AboutPage() {
   return (
     <div className="min-h-screen bg-white flex flex-col">
       <Navbar />
+      <SEO
+        title="About"
+        description="Why we built Channelpilot: creating great content should be about ideas, not tedious production work. Our mission, values, and team."
+        path="/about"
+      />
 
       {/* Hero */}
       <section className="pt-28 pb-20 px-6 border-b border-gray-100">
@@ -36,7 +42,7 @@ export default function AboutPage() {
             Built by creators,<br />for creators.
           </h1>
           <p className="text-xl text-gray-500 leading-relaxed max-w-xl">
-            We built YouTube Automation because creating great content should be about ideas — not tedious production work.
+            We built Channelpilot because creating great content should be about ideas - not tedious production work.
           </p>
         </div>
       </section>
@@ -58,11 +64,16 @@ export default function AboutPage() {
         <div className="max-w-3xl mx-auto">
           <h2 className="text-2xl font-bold text-navy-600 mb-6">Our mission</h2>
           <p className="text-gray-500 leading-relaxed text-lg mb-4">
-            Every creator has ideas worth sharing. Most of them are blocked not by a lack of creativity — but by the sheer time it takes to produce, edit, and publish consistently.
+            Every creator has ideas worth sharing. Most of them are blocked not by a lack of creativity - but by the sheer time it takes to produce, edit, and publish consistently.
           </p>
-          <p className="text-gray-500 leading-relaxed text-lg">
-            Our mission is to make that problem disappear, so that publishing daily feels as natural as writing a tweet.
+          <p className="text-gray-500 leading-relaxed text-lg mb-8">
+            Our mission is to make that problem disappear, so that publishing consistently feels as natural as writing a note, not a weekend project.
           </p>
+          <blockquote className="border-l-2 border-sky-500 pl-6 text-gray-600 leading-relaxed italic">
+            "We started this because our own channel was dying under the production workload - not the algorithm.
+            Editing, voiceover, thumbnails, uploads: two full days a week, every week. Channelpilot is the tool we wished
+            existed back then, built so the next creator doesn't have to choose between having a life and having a channel."
+          </blockquote>
         </div>
       </section>
 

@@ -41,6 +41,7 @@ const ROUTES: { path: string; name: string }[] = [
   { path: '/app/admin', name: '19-admin' },
   { path: '/app/settings', name: '20-settings' },
   { path: '/app/billing', name: '21-billing' },
+  { path: '/app/seo-generator', name: '22-seo-generator' },
 ]
 
 test.beforeAll(() => {

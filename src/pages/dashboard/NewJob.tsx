@@ -17,7 +17,7 @@ interface JobConfig {
 }
 
 const CONTENT_TYPES = [
-  { id: 'youtube_short', label: 'YouTube Short', desc: 'Vertical 60 s — great for reach', icon: <Sparkles size={18} strokeWidth={1.5} /> },
+  { id: 'youtube_short', label: 'YouTube Short', desc: 'Vertical 60 s - great for reach', icon: <Sparkles size={18} strokeWidth={1.5} /> },
   { id: 'youtube_long',  label: 'YouTube Long',  desc: 'Full 5–15 min educational video', icon: <Tv size={18} strokeWidth={1.5} /> },
   { id: 'tiktok',        label: 'TikTok',        desc: 'Short-form vertical for TikTok',  icon: <Music size={18} strokeWidth={1.5} /> },
   { id: 'reel',          label: 'Instagram Reel', desc: 'Reels for Instagram distribution', icon: <Clapperboard size={18} strokeWidth={1.5} /> },

@@ -155,8 +155,8 @@ function buildMockTopics(type: TopicType, channel: string): TopicIdea[] {
   const bases = {
     viral:     ['10 AI Tools That Will Replace Your Job in 2026', 'Why Everyone Is Quitting Social Media', 'The Brutal Truth About Online Business'],
     evergreen: ['How to Build a Morning Routine That Actually Works', 'The Science of Getting Rich', 'Why Most People Never Achieve Their Goals'],
-    news:      ['Breaking: New AI Model Beats GPT-5 on Every Benchmark', 'YouTube Changes Its Algorithm Again — What You Need to Know', 'Tech Layoffs 2026: The Real Reason Behind the Cuts'],
-    custom:    ['Your Custom Topic Here — Type in the box below', 'Untapped Niche: Nobody Is Talking About This', 'Deep Dive: The Subject Your Audience Actually Wants'],
+    news:      ['Breaking: New AI Model Beats GPT-5 on Every Benchmark', 'YouTube Changes Its Algorithm Again - What You Need to Know', 'Tech Layoffs 2026: The Real Reason Behind the Cuts'],
+    custom:    ['Your Custom Topic Here - Type in the box below', 'Untapped Niche: Nobody Is Talking About This', 'Deep Dive: The Subject Your Audience Actually Wants'],
   }
   return bases[type].map((topic, i) => ({
     id:            `mock-${type}-${i}`,
@@ -178,7 +178,7 @@ export default function IdeasPage() {
   const navigate  = useNavigate()
   const toast     = useToast()
   const user      = useAuthStore((s) => s.user)
-  const { selectTopic, setChannel, channelSlug, contentType, setContentType, setStep } = useCreateStore()
+  const { selectTopic, setChannel, channelSlug, contentType, setContentType, setStep, step, selectedTopic, reset } = useCreateStore()
   const { data: channels = [] } = useChannels()
 
   const [topicType,   setTopicType]   = useState<TopicType>('viral')
@@ -188,6 +188,24 @@ export default function IdeasPage() {
   const [bookmarks,   setBookmarks]   = useState<Set<string>>(new Set())
   const [queued,      setQueued]      = useState<Set<string>>(new Set())
   const [customTopic, setCustomTopic] = useState('')
+  const [draftDismissed, setDraftDismissed] = useState(false)
+
+  // A draft exists if the wizard previously advanced past Ideas and wasn't reset/submitted.
+  const hasDraft = !draftDismissed && step > 1 && !!selectedTopic
+
+  const STEP_PATHS: Record<number, string> = {
+    2: '/app/create/script', 3: '/app/create/visuals', 4: '/app/create/seo', 5: '/app/create/thumbnail', 6: '/app/create/submit',
+  }
+
+  const resumeDraft = () => {
+    const path = STEP_PATHS[step]
+    if (path) navigate(path)
+  }
+
+  const discardDraft = () => {
+    reset()
+    setDraftDismissed(true)
+  }
 
   // Persist bookmarks to localStorage, keyed by user so they survive reload
   const _bmKey = `vidora_bookmarks_${user?.id ?? 'anon'}`
@@ -199,6 +217,13 @@ export default function IdeasPage() {
     } catch {}
   }, [_bmKey])
 
+  // Default to the user's first channel so jobs aren't created channel-less by accident.
+  useEffect(() => {
+    if (!channelSlug && channels.length > 0) {
+      setChannel((channels[0] as any).slug)
+    }
+  }, [channels, channelSlug, setChannel])
+
   useEffect(() => {
     try {
       localStorage.setItem(_bmKey, JSON.stringify([...bookmarks]))
@@ -206,7 +231,7 @@ export default function IdeasPage() {
   }, [bookmarks, _bmKey])
 
   // Fetch ideas via API (falls back to mock only when the endpoint is
-  // genuinely unreachable — real API errors, e.g. 402 Payment Required when
+  // genuinely unreachable - real API errors, e.g. 402 Payment Required when
   // no BYOK/Anthropic key is configured, are surfaced to the user instead of
   // being silently replaced with fake placeholder topics).
   const generateMutation = useMutation({
@@ -223,7 +248,7 @@ export default function IdeasPage() {
         // Only fall back to mock data when the request never reached a real
         // API response (e.g. endpoint not wired / network failure). A real
         // HTTP error response (401/402/403/500...) means the backend is
-        // there and rejected the request for a real reason — surface it.
+        // there and rejected the request for a real reason - surface it.
         if (err?.response) throw err
         return buildMockTopics(topicType, channelSlug)
       }
@@ -280,7 +305,7 @@ export default function IdeasPage() {
       topic:         customTopic.trim(),
       score:         0,
       type:          'custom',
-      angle:         'Your custom topic — script will be tailored to your exact vision.',
+      angle:         'Your custom topic - script will be tailored to your exact vision.',
       hook:          '',
       thumbnailText: customTopic.trim().slice(0, 30).toUpperCase(),
       shortsAngle:   '',
@@ -306,6 +331,28 @@ export default function IdeasPage() {
         <p className="text-[13px] text-[#525252] mt-0.5">Generate and score video topic ideas for your channel.</p>
       </div>
 
+      {hasDraft && (
+        <div className="flex items-center justify-between gap-3 mb-5 px-4 py-3 bg-[#EFF6FF] border border-[#BFDBFE] rounded-lg">
+          <p className="text-[12px] text-[#1E40AF]">
+            You have a draft in progress - <span className="font-semibold">{selectedTopic?.topic}</span>.
+          </p>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              onClick={resumeDraft}
+              className="h-7 px-3 text-[11px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] transition-colors"
+            >
+              Resume draft
+            </button>
+            <button
+              onClick={discardDraft}
+              className="h-7 px-3 text-[11px] font-medium text-[#525252] border border-[#BFDBFE] rounded hover:border-[#93C5FD] transition-colors"
+            >
+              Start fresh
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Config bar */}
       <div className="flex flex-wrap items-center gap-3 mb-5 p-4 bg-white border border-[#E5E5E5] rounded-lg">
         {/* Channel selector */}
@@ -324,20 +371,20 @@ export default function IdeasPage() {
         </div>
 
         <div className="w-px h-5 bg-[#E5E5E5]" />
-
         {/* Content type */}
         <div className="flex items-center gap-1.5">
           {(['longform', 'short', 'kids'] as const).map((t) => (
             <button
               key={t}
-              onClick={() => setContentType(t)}
+              onClick={() => t === 'kids' ? navigate('/app/kids') : setContentType(t)}
+              title={t === 'kids' ? 'Animated kids content has its own dedicated studio with character profiles' : undefined}
               className={`h-7 px-2.5 text-[11px] font-medium rounded capitalize transition-colors ${
                 contentType === t
                   ? 'bg-[#0A0A0A] text-white'
                   : 'text-[#525252] hover:bg-[#F5F5F5]'
               }`}
             >
-              {t === 'longform' ? 'Long-form' : t === 'short' ? 'Shorts' : 'Kids'}
+              {t === 'longform' ? 'Long-form' : t === 'short' ? 'Shorts' : 'Kids Studio →'}
             </button>
           ))}
         </div>
@@ -361,6 +408,13 @@ export default function IdeasPage() {
           ))}
         </div>
       </div>
+
+      {!channelSlug && channels.length > 0 && (
+        <div className="flex items-center gap-2 mb-5 -mt-2 px-3 py-2 bg-[#FFFBEB] border border-[#FDE68A] rounded-lg text-[12px] text-[#92400E]">
+          <AlertCircle size={13} strokeWidth={1.5} className="flex-shrink-0" />
+          "Any channel" is selected - this video will not be attributed to a channel and won't auto-upload to YouTube. Pick a channel above to enable auto-upload.
+        </div>
+      )}
 
       {/* Quick-launch topic type buttons */}
       <div className="flex flex-wrap gap-2 mb-6">
@@ -433,7 +487,7 @@ export default function IdeasPage() {
         </div>
       )}
 
-      {/* Empty state — prompt to generate */}
+      {/* Empty state - prompt to generate */}
       {!generateMutation.isPending && ideas.length === 0 && (
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <Sparkles size={32} strokeWidth={1} className="text-[#D4D4D4] mb-4" />
@@ -454,7 +508,7 @@ export default function IdeasPage() {
       {/* Results grid + detail panel */}
       {!generateMutation.isPending && ideas.length > 0 && (
         <div className="flex gap-5">
-          {/* Grid — 60% */}
+          {/* Grid - 60% */}
           <div className="flex-1 min-w-0">
             <div className="flex items-center justify-between mb-3">
               <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest">
@@ -484,7 +538,7 @@ export default function IdeasPage() {
             </div>
           </div>
 
-          {/* Detail panel — 280px */}
+          {/* Detail panel - 280px */}
           {panelTopic && (
             <div className="w-[280px] flex-shrink-0">
               <DetailPanel

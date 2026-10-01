@@ -220,7 +220,7 @@ function SetupForm({
         {/* Outline */}
         <div className="col-span-2">
           <label className="block text-[11px] font-medium text-[#525252] mb-1">
-            Outline <span className="text-[#A3A3A3] font-normal">(optional — helps Claude include all animals/verses)</span>
+            Outline <span className="text-[#A3A3A3] font-normal">(optional - helps AI include all animals/verses)</span>
           </label>
           <textarea
             value={form.outline}
@@ -233,7 +233,7 @@ function SetupForm({
       </div>
 
       <div className="flex items-center justify-between pt-1">
-        <p className="text-[11px] text-[#A3A3A3]">Claude will generate song lyrics + {'>'}24 animation segments</p>
+        <p className="text-[11px] text-[#A3A3A3]">AI will generate song lyrics + {'>'}24 animation segments</p>
         <button
           onClick={() => form.title.trim() && onSubmit(form)}
           disabled={loading || !form.title.trim()}
@@ -335,7 +335,7 @@ function ReviewCard({
           className="w-full px-3 py-2 text-[12px] text-[#0A0A0A] bg-[#FAFAFA] border border-[#E5E5E5] rounded-md resize-none font-mono leading-relaxed"
         />
         <p className="text-[10px] text-[#A3A3A3] mt-1">
-          This script will be sent to Suno/Mureka for AI music generation. Read-only — regenerate to change.
+          This script will be sent to Suno/Mureka for AI music generation. Read-only - regenerate to change.
         </p>
       </div>
 
@@ -396,7 +396,7 @@ function ReviewCard({
       <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-50 border border-amber-100 rounded-md">
         <AlertCircle size={12} strokeWidth={1.5} className="text-amber-600 mt-0.5 flex-shrink-0" />
         <p className="text-[11px] text-amber-700">
-          Approving will generate audio (Suno/Mureka) and animation (Kling AI) — this consumes API credits.
+          Approving will generate audio (Suno/Mureka) and animation (Kling AI) - this consumes API credits.
           Review carefully before proceeding.
         </p>
       </div>
@@ -469,7 +469,7 @@ function MediaProgressCard({ genData }: { genData: GenData }) {
         <p className="text-[12px] text-[#A3A3A3] text-center">{genData.message}</p>
       )}
       <p className="text-[11px] text-[#A3A3A3] text-center">
-        This can take 3–8 minutes. You can leave this page — the job runs in the background.
+        This can take 3–8 minutes. You can leave this page - the job runs in the background.
       </p>
     </div>
   )
@@ -890,7 +890,7 @@ function AIGenerateModal({
             className="flex items-center gap-1.5 h-8 px-4 bg-[#0A0A0A] text-white text-[12px] rounded hover:bg-[#262626] disabled:opacity-40 transition-colors"
           >
             {loading ? <Loader2 size={11} strokeWidth={1.5} className="animate-spin" /> : <Wand2 size={11} strokeWidth={1.5} />}
-            Generate with Claude
+            Generate with AI
           </button>
         </div>
       </div>
@@ -961,14 +961,14 @@ export default function KidsPage() {
           clearInterval(interval)
         }
       } catch (e) {
-        // transient — keep polling
+        // transient - keep polling
       }
     }, 3000)
 
     return () => clearInterval(interval)
   }, [genId, phase])
 
-  // ── Handlers — Video ───────────────────────────────────────────────────────
+  // ── Handlers - Video ───────────────────────────────────────────────────────
   const handleGenerate = useCallback(async (form: SetupValues) => {
     setError(null)
     setPhase('gen_loading')
@@ -983,7 +983,7 @@ export default function KidsPage() {
       if (!res.ok || !res.gen_id) throw new Error(res.error ?? 'No gen_id returned')
       setGenId(res.gen_id)
     } catch (e: any) {
-      setError(e.message ?? 'Failed to start generation')
+      setError(e?.response?.data?.detail ?? e.message ?? 'Failed to start generation')
       setPhase('setup')
     }
   }, [])
@@ -995,7 +995,7 @@ export default function KidsPage() {
       await kidsApi.approve(genId)
       setPhase('media_loading')
     } catch (e: any) {
-      setError(e.message ?? 'Approve failed')
+      setError(e?.response?.data?.detail ?? e.message ?? 'Approve failed')
     } finally {
       setApproving(false)
     }
@@ -1008,7 +1008,7 @@ export default function KidsPage() {
       await kidsApi.publish({ genId, ...form })
       setPhase('publishing')
     } catch (e: any) {
-      setError(e.message ?? 'Publish failed')
+      setError(e?.response?.data?.detail ?? e.message ?? 'Publish failed')
     } finally {
       setPublishing(false)
     }
@@ -1021,7 +1021,7 @@ export default function KidsPage() {
     setError(null)
   }, [])
 
-  // ── Handlers — Characters ──────────────────────────────────────────────────
+  // ── Handlers - Characters ──────────────────────────────────────────────────
   const handleSaveChar = useCallback(async (data: any) => {
     const isNew = !(editChar as CharProfile)?.id
     setCharSaving(true)
@@ -1129,7 +1129,7 @@ export default function KidsPage() {
             </div>
             <div>
               <h1 className="text-[14px] font-semibold text-[#0A0A0A]">Kids Studio</h1>
-              <p className="text-[11px] text-[#A3A3A3]">Animated video pipeline — Kling + Suno + Claude</p>
+              <p className="text-[11px] text-[#A3A3A3]">Animated video pipeline - Kling + Suno + AI</p>
             </div>
           </div>
 
@@ -1172,7 +1172,7 @@ export default function KidsPage() {
 
               {phase === 'gen_loading' && (
                 <LoadingCard
-                  message={genData?.message ?? 'Claude is writing the script and animation plan…'}
+                  message={genData?.message ?? 'AI is writing the script and animation plan…'}
                   onCancel={handleReset}
                 />
               )}

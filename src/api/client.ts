@@ -33,7 +33,10 @@ apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const original = error.config as InternalAxiosRequestConfig & { _retry?: boolean }
-    if (error.response?.status !== 401 || original._retry) {
+    // Credential endpoints return 401 for bad input — not an expired session.
+    // Let the caller show the error instead of refreshing/redirecting.
+    const isAuthEndpoint = /\/api\/auth\/(login|signup|refresh)/.test(original?.url ?? '')
+    if (error.response?.status !== 401 || original._retry || isAuthEndpoint) {
       return Promise.reject(error)
     }
 

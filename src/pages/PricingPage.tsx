@@ -1,7 +1,8 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import Navbar from '@components/Navbar'
 import Footer from '@components/Footer'
+import SEO from '@components/SEO'
 import { Check, Minus } from 'lucide-react'
 
 const plans = [
@@ -49,6 +50,11 @@ export default function PricingPage() {
   return (
     <div className="min-h-screen bg-white flex flex-col">
       <Navbar />
+      <SEO
+        title="Pricing"
+        description="Simple, predictable pricing for AI YouTube automation. Start free with 5 videos a month, upgrade to Pro for multi-platform distribution and analytics, or go Enterprise for unlimited channels."
+        path="/pricing"
+      />
 
       {/* Hero */}
       <section className="pt-28 pb-20 px-6 border-b border-gray-100">
@@ -151,7 +157,7 @@ export default function PricingPage() {
           <div className="space-y-8">
             {[
               { q: 'Can I cancel at any time?', a: 'Yes. Cancel from your billing settings in one click. You keep access until the end of your billing period. No fees.' },
-              { q: 'What happens if I exceed my quota?', a: 'New jobs are paused when you hit your monthly limit. You can upgrade mid-month — overage is prorated.' },
+              { q: 'What happens if I exceed my quota?', a: 'New jobs are paused when you hit your monthly limit. You can upgrade mid-month - overage is prorated.' },
               { q: 'Do you offer refunds?', a: '14-day money-back guarantee on the first charge of any paid plan. Contact support@ytautomation.io within 14 days.' },
             ].map((item) => (
               <div key={item.q}>

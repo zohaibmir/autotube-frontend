@@ -3,11 +3,11 @@ import { useParams, Link } from 'react-router-dom'
 import {
   ChevronLeft, RefreshCw, Loader2, ExternalLink, CheckCircle2,
   XCircle, AlertCircle, Wand2, Wrench, Video, BarChart2, KeyRound, ShieldCheck,
-  ImageIcon, Film, Upload,
+  ImageIcon, Film, Upload, Search, Sparkles, Type,
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useChannels } from '@hooks/useJobs'
-import { channelOpsApi, analyticsApi, channelsApi, brandingApi } from '@api/services'
+import { channelOpsApi, analyticsApi, channelsApi, brandingApi, channelProfilesApi } from '@api/services'
 import { useToast } from '@components/Toast'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -20,6 +20,138 @@ function SectionCard({ title, children }: { title: string; children: React.React
       </div>
       {children}
     </div>
+  )
+}
+
+// ─── Video Defaults panel (per-channel visual source / art style / captions) ──
+
+const _ART_STYLE_OPTIONS = [
+  { id: 'anime',          label: 'Anime Dream',      bestFor: 'anime, fantasy & action' },
+  { id: 'comic',          label: 'Comic Pop',        bestFor: 'bold storytelling & drama' },
+  { id: 'watercolor',     label: 'Soft Watercolor',  bestFor: 'calm, reflective topics' },
+  { id: 'photorealistic', label: 'Cinematic Real',   bestFor: 'history & documentary' },
+  { id: 'storybook',      label: 'Storybook Magic',  bestFor: 'kids & wholesome content' },
+  { id: 'gothic',         label: 'Midnight Gothic',  bestFor: 'horror & mystery' },
+]
+
+function VideoDefaultsPanel({ slug }: { slug: string }) {
+  const toast = useToast()
+  const queryClient = useQueryClient()
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['channel-profile', slug],
+    queryFn: () => channelProfilesApi.get(slug),
+    staleTime: 30_000,
+  })
+  const profile = data?.profile ?? {}
+
+  const [visualSource, setVisualSource] = useState<string>('stock')
+  const [artStyle, setArtStyle] = useState<string>('')
+  const [captionsEnabled, setCaptionsEnabled] = useState(true)
+  const [hydrated, setHydrated] = useState(false)
+
+  if (!isLoading && !hydrated && data) {
+    setVisualSource(profile.default_visual_source || 'stock')
+    setArtStyle(profile.default_art_style || '')
+    setCaptionsEnabled(profile.captions_enabled !== false)
+    setHydrated(true)
+  }
+
+  const save = useMutation({
+    mutationFn: (fields: Parameters<typeof channelProfilesApi.update>[1]) =>
+      channelProfilesApi.update(slug, fields),
+    onSuccess: () => {
+      toast.success('Video defaults saved')
+      queryClient.invalidateQueries({ queryKey: ['channel-profile', slug] })
+    },
+    onError: () => toast.error('Save failed - try again'),
+  })
+
+  return (
+    <SectionCard title="Video Defaults">
+      <div className="px-5 py-4 space-y-4">
+        <p className="text-[11px] text-[#A3A3A3] -mt-1">
+          Defaults for new videos on this channel. Can still be overridden per-video in the Visuals step.
+        </p>
+
+        {/* Default visual source */}
+        <div>
+          <p className="text-[11px] font-medium text-[#525252] mb-2">Default video source</p>
+          <div className="flex gap-2">
+            {[
+              { id: 'stock', label: 'Stock', icon: <Film size={12} strokeWidth={1.5} /> },
+              { id: 'custom_video', label: 'Custom video', icon: <Upload size={12} strokeWidth={1.5} /> },
+              { id: 'ai_image', label: 'AI images', icon: <Sparkles size={12} strokeWidth={1.5} /> },
+            ].map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => setVisualSource(opt.id)}
+                className={[
+                  'flex items-center gap-1.5 h-7 px-2.5 text-[11px] font-medium rounded border transition-colors',
+                  visualSource === opt.id
+                    ? 'bg-[#0A0A0A] text-white border-[#0A0A0A]'
+                    : 'bg-white border-[#E5E5E5] text-[#525252] hover:border-[#D4D4D4]',
+                ].join(' ')}
+              >
+                {opt.icon} {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Default art style (only relevant when AI images is the default) */}
+        {visualSource === 'ai_image' && (
+          <div>
+            <p className="text-[11px] font-medium text-[#525252] mb-2">Default art style</p>
+            <select
+              value={artStyle}
+              onChange={(e) => setArtStyle(e.target.value)}
+              className="h-8 px-2 text-[12px] border border-[#E5E5E5] rounded bg-white text-[#0A0A0A]"
+            >
+              <option value="">Choose per video</option>
+              {_ART_STYLE_OPTIONS.map((s) => (
+                <option key={s.id} value={s.id}>{s.label} — {s.bestFor}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Captions toggle */}
+        <div className="flex items-center justify-between pt-2 border-t border-[#F5F5F5]">
+          <div className="flex items-center gap-1.5">
+            <Type size={13} strokeWidth={1.5} className="text-[#525252]" />
+            <span className="text-[12px] font-medium text-[#0A0A0A]">Burned-in captions</span>
+          </div>
+          <button
+            onClick={() => setCaptionsEnabled((v) => !v)}
+            className={[
+              'h-[20px] w-[36px] rounded-full transition-colors relative flex-shrink-0',
+              captionsEnabled ? 'bg-[#16A34A]' : 'bg-[#D4D4D4]',
+            ].join(' ')}
+          >
+            <span
+              className={[
+                'absolute top-[2px] w-[16px] h-[16px] bg-white rounded-full transition-transform shadow-sm',
+                captionsEnabled ? 'translate-x-[18px]' : 'translate-x-[2px]',
+              ].join(' ')}
+            />
+          </button>
+        </div>
+
+        <button
+          onClick={() => save.mutate({
+            default_visual_source: visualSource,
+            default_art_style: visualSource === 'ai_image' ? (artStyle || undefined) : undefined,
+            captions_enabled: captionsEnabled,
+          })}
+          disabled={save.isPending}
+          className="h-8 px-3 text-[12px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] transition-colors disabled:opacity-40 flex items-center gap-1.5"
+        >
+          {save.isPending ? <Loader2 size={12} strokeWidth={1.5} className="animate-spin" /> : null}
+          Save defaults
+        </button>
+      </div>
+    </SectionCard>
   )
 }
 
@@ -149,6 +281,341 @@ function AuditPanel({ slug }: { slug: string }) {
   )
 }
 
+// ─── AI Coach panel ───────────────────────────────────────────────────────────
+
+function AICoachPanel({ slug }: { slug: string }) {
+  const toast = useToast()
+
+  const coach = useMutation({
+    mutationFn: () => channelOpsApi.auditCoach(slug),
+    onError: () => toast.error('AI coaching failed'),
+  })
+
+  const result = coach.data
+  const priorities: any[] = result?.priorities ?? []
+
+  return (
+    <SectionCard title="AI Coach">
+      <div className="px-5 py-4">
+        {!coach.data && !coach.isPending && (
+          <div className="text-center py-4">
+            <Wand2 size={20} strokeWidth={1.5} className="text-[#D4D4D4] mx-auto mb-2" />
+            <p className="text-[12px] text-[#525252] mb-3">
+              Get a plain-English read on this channel's health and prioritized, channel-specific next steps - not just a checklist.
+            </p>
+            <button
+              onClick={() => coach.mutate()}
+              className="h-7 px-3 text-[11px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] transition-colors inline-flex items-center gap-1.5"
+            >
+              <Wand2 size={11} strokeWidth={1.5} />
+              Get AI coaching
+            </button>
+          </div>
+        )}
+
+        {coach.isPending && (
+          <div className="space-y-2 py-2">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="h-8 bg-[#F5F5F5] rounded animate-pulse" />
+            ))}
+          </div>
+        )}
+
+        {result && !result.ok && (
+          <div className="text-[12px] text-[#DC2626] bg-[#FFF1F2] -mx-5 -my-4 px-5 py-4">
+            {result.error ?? 'AI coaching failed'}
+          </div>
+        )}
+
+        {result?.ok && (
+          <div className="space-y-4">
+            <p className="text-[12px] text-[#0A0A0A] leading-relaxed">{result.summary}</p>
+
+            {priorities.length > 0 && (
+              <div className="space-y-2.5">
+                {priorities.map((p: any, i: number) => (
+                  <div key={i} className="border border-[#E5E5E5] rounded-lg p-3">
+                    <p className="text-[12px] font-semibold text-[#0A0A0A] mb-1">{i + 1}. {p.title}</p>
+                    {p.why && <p className="text-[11px] text-[#525252] mb-1"><span className="font-medium text-[#A3A3A3]">Why:</span> {p.why}</p>}
+                    {p.action && <p className="text-[11px] text-[#525252]"><span className="font-medium text-[#A3A3A3]">Do:</span> {p.action}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={() => coach.mutate()}
+              disabled={coach.isPending}
+              className="h-6 px-2.5 text-[10px] font-medium border border-[#E5E5E5] rounded text-[#525252] hover:border-[#0A0A0A] hover:text-[#0A0A0A] transition-colors inline-flex items-center gap-1"
+            >
+              <RefreshCw size={9} strokeWidth={1.5} />
+              Regenerate
+            </button>
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  )
+}
+
+// ─── Competitor Benchmark panel ────────────────────────────────────────────────
+
+function BenchmarkPanel({ slug }: { slug: string }) {
+  const toast = useToast()
+  const [compareValue, setCompareValue] = useState('')
+
+  const benchmark = useMutation({
+    mutationFn: (compare: string) => channelOpsApi.benchmark(compare, slug),
+    onError: () => toast.error('Benchmark failed'),
+  })
+
+  const result = benchmark.data
+  const mine = result?.your_channel
+  const theirs = result?.compared_channel
+
+  const fmtNum = (n?: number) => n == null ? '—' : n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}K` : String(n)
+
+  return (
+    <SectionCard title="Competitor Benchmark">
+      <div className="px-5 py-4 space-y-3">
+        <p className="text-[12px] text-[#525252]">Compare your channel against any public YouTube channel - paste a handle, URL, or channel ID.</p>
+        <div className="flex gap-2">
+          <input
+            value={compareValue}
+            onChange={(e) => setCompareValue(e.target.value)}
+            placeholder="@channelname or youtube.com/@channelname"
+            className="flex-1 h-7 px-2.5 text-[12px] border border-[#E5E5E5] rounded bg-[#FAFAFA] focus:outline-none focus:border-[#A3A3A3]"
+          />
+          <button
+            onClick={() => compareValue.trim() && benchmark.mutate(compareValue.trim())}
+            disabled={benchmark.isPending || !compareValue.trim()}
+            className="h-7 px-3 text-[11px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] disabled:opacity-40 transition-colors flex items-center gap-1.5"
+          >
+            {benchmark.isPending ? <Loader2 size={11} strokeWidth={1.5} className="animate-spin" /> : <BarChart2 size={11} strokeWidth={1.5} />}
+            Compare
+          </button>
+        </div>
+
+        {result && !result.ok && (
+          <div className="text-[12px] text-[#DC2626] bg-[#FFF1F2] rounded px-3 py-2">
+            {result.error ?? 'Benchmark failed'}
+          </div>
+        )}
+
+        {result?.ok && mine && theirs && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: 'Channel', mine: mine.title, theirs: theirs.title },
+                { label: 'Subscribers', mine: fmtNum(mine.subscribers), theirs: fmtNum(theirs.subscribers) },
+                { label: 'Videos', mine: fmtNum(mine.videos), theirs: fmtNum(theirs.videos) },
+                { label: 'Total views', mine: fmtNum(mine.views), theirs: fmtNum(theirs.views) },
+                { label: 'Avg days/upload', mine: mine.avg_days_between_uploads ?? '—', theirs: theirs.avg_days_between_uploads ?? '—' },
+              ].map((row) => (
+                <React.Fragment key={row.label}>
+                  <div className="text-[11px] text-[#A3A3A3] col-span-2 uppercase tracking-widest pt-1 first:pt-0">{row.label}</div>
+                  <div className="text-[12px] text-[#0A0A0A] font-medium -mt-2">{row.mine}</div>
+                  <div className="text-[12px] text-[#525252] -mt-2">{row.theirs}</div>
+                </React.Fragment>
+              ))}
+            </div>
+            {result.narrative && (
+              <p className="text-[12px] text-[#0A0A0A] leading-relaxed border-t border-[#F5F5F5] pt-3 whitespace-pre-line">{result.narrative}</p>
+            )}
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  )
+}
+
+// ─── Keyword Clusters panel ────────────────────────────────────────────────────
+
+function KeywordClustersPanel({ slug }: { slug: string }) {
+  const toast = useToast()
+  const [topic, setTopic] = useState('')
+
+  const clusters = useMutation({
+    mutationFn: (t: string) => channelOpsApi.keywordClusters(t, slug),
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail
+      toast.error(typeof detail === 'string' ? detail : 'Keyword lookup failed')
+    },
+  })
+
+  const result = clusters.data
+  const competitionColor = (level: string) =>
+    level === 'low' ? 'text-[#16A34A] bg-[#F0FDF4] border-[#BBF7D0]'
+    : level === 'high' ? 'text-[#BE123C] bg-[#FFF1F2] border-[#FECDD3]'
+    : 'text-[#B45309] bg-[#FFFBEB] border-[#FDE68A]'
+
+  return (
+    <SectionCard title="Keyword Clusters">
+      <div className="px-5 py-4 space-y-3">
+        <p className="text-[12px] text-[#525252]">
+          Enter a video topic - we'll pull real top-ranking titles and YouTube's own approximate
+          result count for a few real search phrases, then group them by intent with a recommendation.
+          Limited to 5 lookups/hour (each one uses real YouTube API quota).
+        </p>
+        <div className="flex gap-2">
+          <input
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            placeholder="e.g. how to save money as a student"
+            className="flex-1 h-7 px-2.5 text-[12px] border border-[#E5E5E5] rounded bg-[#FAFAFA] focus:outline-none focus:border-[#A3A3A3]"
+          />
+          <button
+            onClick={() => topic.trim() && clusters.mutate(topic.trim())}
+            disabled={clusters.isPending || !topic.trim()}
+            className="h-7 px-3 text-[11px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] disabled:opacity-40 transition-colors flex items-center gap-1.5"
+          >
+            {clusters.isPending ? <Loader2 size={11} strokeWidth={1.5} className="animate-spin" /> : <Search size={11} strokeWidth={1.5} />}
+            Analyze
+          </button>
+        </div>
+
+        {result && !result.ok && (
+          <div className="text-[12px] text-[#DC2626] bg-[#FFF1F2] rounded px-3 py-2">
+            {result.error ?? 'Keyword lookup failed'}
+          </div>
+        )}
+
+        {result?.ok && (result.clusters || []).length > 0 && (
+          <div className="space-y-3">
+            {result.clusters.map((c: any, i: number) => (
+              <div key={i} className="border border-[#F5F5F5] rounded-md p-3">
+                <div className="flex items-center justify-between mb-1.5">
+                  <p className="text-[12px] font-semibold text-[#0A0A0A]">{c.name}</p>
+                  <span className={`text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded border ${competitionColor(c.competition)}`}>
+                    {c.competition} competition
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {(c.keywords || []).map((k: string) => (
+                    <span key={k} className="text-[10px] text-[#525252] bg-[#FAFAFA] border border-[#E5E5E5] rounded px-1.5 py-0.5">{k}</span>
+                  ))}
+                </div>
+                <p className="text-[11px] text-[#525252] leading-relaxed">{c.recommendation}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  )
+}
+
+// ─── Rank Tracking panel ───────────────────────────────────────────────────────
+
+function RankTrackingPanel({ slug }: { slug: string }) {
+  const toast = useToast()
+  const [videoId, setVideoId] = useState('')
+  const [keyword, setKeyword] = useState('')
+
+  const check = useMutation({
+    mutationFn: () => channelOpsApi.rankCheck(videoId.trim(), keyword.trim(), slug),
+    onSuccess: () => {
+      history.refetch()
+    },
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail
+      toast.error(typeof detail === 'string' ? detail : 'Rank check failed')
+    },
+  })
+
+  const history = useQuery({
+    queryKey: ['rank-history', videoId, keyword],
+    queryFn: () => channelOpsApi.rankHistory(videoId.trim(), keyword.trim()),
+    enabled: false, // only fetch on demand - refetched after a successful check
+  })
+
+  const narrative = useMutation({
+    mutationFn: () => channelOpsApi.rankNarrative(videoId.trim(), keyword.trim()),
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail
+      toast.error(typeof detail === 'string' ? detail : 'Could not explain rank movement')
+    },
+  })
+
+  const canQuery = videoId.trim().length > 0 && keyword.trim().length > 0
+  const historyRows = history.data?.history || []
+
+  return (
+    <SectionCard title="Rank Tracking">
+      <div className="px-5 py-4 space-y-3">
+        <p className="text-[12px] text-[#525252]">
+          Track where one of your videos ranks in real YouTube search results for a keyword over time.
+          Each check is a real search - history builds as you check again later. Limited to 5 checks/hour.
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            value={videoId}
+            onChange={(e) => setVideoId(e.target.value)}
+            placeholder="Video ID (from the video's URL)"
+            className="h-7 px-2.5 text-[12px] border border-[#E5E5E5] rounded bg-[#FAFAFA] focus:outline-none focus:border-[#A3A3A3]"
+          />
+          <input
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="Keyword to track"
+            className="h-7 px-2.5 text-[12px] border border-[#E5E5E5] rounded bg-[#FAFAFA] focus:outline-none focus:border-[#A3A3A3]"
+          />
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => canQuery && check.mutate()}
+            disabled={check.isPending || !canQuery}
+            className="h-7 px-3 text-[11px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] disabled:opacity-40 transition-colors flex items-center gap-1.5"
+          >
+            {check.isPending ? <Loader2 size={11} strokeWidth={1.5} className="animate-spin" /> : <BarChart2 size={11} strokeWidth={1.5} />}
+            Check rank now
+          </button>
+          <button
+            onClick={() => canQuery && narrative.mutate()}
+            disabled={narrative.isPending || !canQuery}
+            className="h-7 px-3 text-[11px] font-medium border border-[#E5E5E5] text-[#0A0A0A] rounded hover:border-[#A3A3A3] disabled:opacity-40 transition-colors"
+          >
+            {narrative.isPending ? <Loader2 size={11} strokeWidth={1.5} className="animate-spin inline" /> : null} Explain movement
+          </button>
+        </div>
+
+        {check.data && !check.data.ok && (
+          <div className="text-[12px] text-[#DC2626] bg-[#FFF1F2] rounded px-3 py-2">{check.data.error}</div>
+        )}
+        {check.data?.ok && (
+          <div className="text-[12px] text-[#0A0A0A] bg-[#FAFAFA] rounded px-3 py-2">
+            {check.data.rank
+              ? <>Rank <strong>#{check.data.rank}</strong> of {check.data.checked_out_of} scanned</>
+              : <>Not found in the top {check.data.checked_out_of} results</>}
+            <span className="text-[#A3A3A3]"> · ~{check.data.total_results_estimate?.toLocaleString()} results (approximate)</span>
+          </div>
+        )}
+
+        {narrative.data && !narrative.data.ok && (
+          <div className="text-[12px] text-[#B45309] bg-[#FFFBEB] rounded px-3 py-2">{narrative.data.error}</div>
+        )}
+        {narrative.data?.ok && (
+          <p className="text-[12px] text-[#0A0A0A] leading-relaxed border-t border-[#F5F5F5] pt-3">{narrative.data.narrative}</p>
+        )}
+
+        {historyRows.length > 0 && (
+          <div className="pt-2 border-t border-[#F5F5F5]">
+            <p className="text-[11px] text-[#A3A3A3] uppercase tracking-widest mb-1.5">History</p>
+            <div className="space-y-1">
+              {historyRows.map((h: any, i: number) => (
+                <div key={i} className="flex items-center justify-between text-[11px] text-[#525252]">
+                  <span>{new Date(h.checked_at).toLocaleString()}</span>
+                  <span className="font-medium text-[#0A0A0A]">{h.rank ? `#${h.rank}` : 'not found'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  )
+}
+
 // ─── OAuth Diagnostics panel ──────────────────────────────────────────────────
 
 function OAuthDiagnosticsPanel() {
@@ -224,7 +691,7 @@ function OAuthDiagnosticsPanel() {
                 {channels.length > 0 && (
                   <div className="border border-[#F5F5F5] rounded overflow-hidden mt-3">
                     {channels.map((ch: any) => {
-                      // `has_token` only means a token *file* exists on disk — it
+                      // `has_token` only means a token *file* exists on disk - it
                       // doesn't mean Google still honors it. Use auth_status (the
                       // same field the Channels list page uses) so this panel
                       // doesn't claim "Token OK" for a revoked/expired channel.
@@ -400,7 +867,7 @@ function BrandingPanel({ slug, channel }: { slug: string; channel: any }) {
       {brandTab === 'seo' && (
         <div className="px-5 py-4 space-y-3">
           <p className="text-[12px] text-[#525252]">
-            Generate an SEO-optimised description and keyword set using Claude, then apply it directly to the channel.
+            Generate an SEO-optimised description and keyword set using AI, then apply it directly to the channel.
           </p>
           {!seoSuggestions ? (
             <button
@@ -563,7 +1030,7 @@ function BrandingPanel({ slug, channel }: { slug: string; channel: any }) {
           ) : (
             <div className="py-6 flex flex-col items-center gap-2 text-center">
               <ImageIcon size={24} strokeWidth={1} className="text-[#D4D4D4]" />
-              <p className="text-[12px] text-[#A3A3A3]">No assets yet — click Generate Assets above</p>
+              <p className="text-[12px] text-[#A3A3A3]">No assets yet - click Generate Assets above</p>
             </div>
           )}
 
@@ -604,6 +1071,7 @@ function BrandingPanel({ slug, channel }: { slug: string; channel: any }) {
 function VideosPanel({ slug }: { slug: string }) {
   const toast = useToast()
   const queryClient = useQueryClient()
+  const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const { data, isLoading } = useQuery({
     queryKey: ['channel-videos', slug],
@@ -624,9 +1092,38 @@ function VideosPanel({ slug }: { slug: string }) {
     onError: () => toast.error('Fix failed'),
   })
 
-  const allVideos: any[] = data?.videos ?? []
+  const fixSelected = useMutation({
+    mutationFn: () => channelOpsApi.fixSelected(Array.from(selected), slug),
+    onSuccess: (res) => {
+      if (res?.ok) {
+        const contentNote = res.content_improved ? `, ${res.content_improved} with AI-improved tags/description` : ''
+        toast.success(`Fixed ${res.fixed ?? 0} of ${res.attempted ?? selected.size} selected videos${contentNote}`)
+        setSelected(new Set())
+        queryClient.invalidateQueries({ queryKey: ['channel-videos', slug] })
+      } else {
+        toast.error(res?.error ?? 'Bulk fix failed')
+      }
+    },
+    onError: () => toast.error('Bulk fix failed'),
+  })
+
+  const allVideos: any[] = Array.isArray(data) ? data : (data?.videos ?? [])
   // Filter to this channel where possible
   const videos = allVideos.filter((v: any) => !v.channel_slug || v.channel_slug === slug).slice(0, 30)
+  const fixableIds = videos.map((v: any) => v.youtube_id ?? v.video_id).filter(Boolean)
+  const allSelected = fixableIds.length > 0 && fixableIds.every((id: string) => selected.has(id))
+
+  const toggleAll = () => {
+    setSelected(allSelected ? new Set() : new Set(fixableIds))
+  }
+  const toggleOne = (id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   if (isLoading) return (
     <SectionCard title="Videos">
@@ -640,6 +1137,31 @@ function VideosPanel({ slug }: { slug: string }) {
 
   return (
     <SectionCard title="Videos">
+      {selected.size > 0 && (
+        <div className="flex items-center justify-between px-5 py-2.5 bg-[#FAFAFA] border-b border-[#E5E5E5]">
+          <span className="text-[11px] font-medium text-[#0A0A0A]">{selected.size} selected</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSelected(new Set())}
+              className="h-6 px-2.5 text-[10px] font-medium text-[#525252] hover:text-[#0A0A0A] transition-colors"
+            >
+              Clear
+            </button>
+            <button
+              onClick={() => fixSelected.mutate()}
+              disabled={fixSelected.isPending}
+              className="h-6 px-2.5 text-[11px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] disabled:opacity-40 transition-colors flex items-center gap-1.5"
+            >
+              {fixSelected.isPending
+                ? <Loader2 size={10} strokeWidth={1.5} className="animate-spin" />
+                : <Wrench size={10} strokeWidth={1.5} />
+              }
+              Fix selected ({selected.size})
+            </button>
+          </div>
+        </div>
+      )}
+
       {videos.length === 0 ? (
         <div className="px-5 py-10 text-center text-[12px] text-[#A3A3A3]">
           <Video size={20} strokeWidth={1.5} className="mx-auto mb-2 text-[#D4D4D4]" />
@@ -649,24 +1171,46 @@ function VideosPanel({ slug }: { slug: string }) {
         <table className="w-full text-[12px]">
           <thead>
             <tr className="border-b border-[#E5E5E5]">
+              <th scope="col" className="w-9 px-4 py-2.5 text-left">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                  aria-label="Select all videos"
+                  className="w-3.5 h-3.5 rounded border-[#D4D4D4] accent-[#0A0A0A]"
+                />
+              </th>
               {['Title', 'Published', 'Views', 'Status', ''].map((h) => (
                 <th key={h} scope="col" className="px-4 py-2.5 text-left text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-[#F5F5F5]">
-            {videos.map((v: any) => (
-              <tr key={v.video_id ?? v.id} className="hover:bg-[#FAFAFA]">
+            {videos.map((v: any) => {
+              const ytId = v.youtube_id ?? v.video_id
+              return (
+              <tr key={ytId ?? v.id} className="hover:bg-[#FAFAFA]">
+                <td className="px-4 py-2.5">
+                  {ytId && (
+                    <input
+                      type="checkbox"
+                      checked={selected.has(ytId)}
+                      onChange={() => toggleOne(ytId)}
+                      aria-label={`Select ${v.title ?? v.topic ?? ytId}`}
+                      className="w-3.5 h-3.5 rounded border-[#D4D4D4] accent-[#0A0A0A]"
+                    />
+                  )}
+                </td>
                 <td className="px-4 py-2.5 max-w-[260px]">
-                  <p className="text-[#0A0A0A] truncate font-medium">{v.title ?? '(no title)'}</p>
-                  {v.video_id && (
+                  <p className="text-[#0A0A0A] truncate font-medium">{v.title ?? v.topic ?? '(no title)'}</p>
+                  {ytId && (
                     <a
-                      href={`https://youtube.com/watch?v=${v.video_id}`}
+                      href={`https://youtube.com/watch?v=${ytId}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-[10px] text-[#A3A3A3] hover:text-[#0A0A0A] flex items-center gap-0.5 mt-0.5"
                     >
-                      {v.video_id} <ExternalLink size={9} strokeWidth={1.5} />
+                      {ytId} <ExternalLink size={9} strokeWidth={1.5} />
                     </a>
                   )}
                 </td>
@@ -679,16 +1223,17 @@ function VideosPanel({ slug }: { slug: string }) {
                 <td className="px-4 py-2.5">
                   {v.status ? (
                     <span className={`text-[11px] font-medium ${
-                      v.status === 'public' ? 'text-[#16A34A]'
+                      v.status === 'published' || v.status === 'public' ? 'text-[#16A34A]'
+                      : v.status === 'error' ? 'text-[#DC2626]'
                       : v.status === 'private' ? 'text-[#A3A3A3]'
                       : 'text-[#D97706]'
                     }`}>{v.status}</span>
                   ) : '—'}
                 </td>
                 <td className="px-4 py-2.5 text-right">
-                  {v.video_id && (
+                  {ytId && (
                     <button
-                      onClick={() => fixVideo.mutate(v.video_id)}
+                      onClick={() => fixVideo.mutate(ytId)}
                       disabled={fixVideo.isPending}
                       title="Fix SEO"
                       className="h-6 w-6 inline-flex items-center justify-center text-[#A3A3A3] hover:text-[#0A0A0A] border border-[#E5E5E5] rounded transition-colors disabled:opacity-40"
@@ -698,7 +1243,8 @@ function VideosPanel({ slug }: { slug: string }) {
                   )}
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       )}
@@ -713,6 +1259,20 @@ export default function ChannelDetailPage() {
   const { data: channels = [] } = useChannels()
 
   const channel = (channels as any[]).find((c: any) => c.slug === slug)
+
+  // Same queryKey as AuditPanel's audit query below -- React Query dedupes this,
+  // so reading live YouTube subscriber/video/view stats here costs zero extra
+  // network calls. The /api/channels list endpoint is purely local registry data
+  // (slug/name/auth status) and never fetches YouTube stats -- audit_channel()
+  // already does, on this same page, so reuse it instead of adding a new call.
+  const { data: auditData } = useQuery({
+    queryKey: ['channel-audit', slug],
+    queryFn: () => channelOpsApi.audit(slug!),
+    enabled: !!slug,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+  const auditChannelInfo = auditData?.channel
 
   if (!slug) return null
 
@@ -753,9 +1313,9 @@ export default function ChannelDetailPage() {
           {channel && (
             <div className="flex items-center gap-5 bg-white border border-[#E5E5E5] rounded-md px-5 py-3">
               {[
-                ['Subscribers', channel.subscriber_count != null ? Number(channel.subscriber_count).toLocaleString() : '—'],
-                ['Videos', channel.video_count != null ? channel.video_count : '—'],
-                ['Views', channel.view_count != null ? Number(channel.view_count).toLocaleString() : '—'],
+                ['Subscribers', auditChannelInfo?.subscriber_count != null ? Number(auditChannelInfo.subscriber_count).toLocaleString() : '—'],
+                ['Videos', auditChannelInfo?.video_count != null ? Number(auditChannelInfo.video_count).toLocaleString() : '—'],
+                ['Views', auditChannelInfo?.view_count != null ? Number(auditChannelInfo.view_count).toLocaleString() : '—'],
               ].map(([label, value]) => (
                 <div key={label} className="text-center">
                   <p className="text-[14px] font-semibold text-[#0A0A0A] leading-none">{value}</p>
@@ -767,11 +1327,16 @@ export default function ChannelDetailPage() {
         </div>
       </div>
 
-      {/* Body — 2-col layout */}
+      {/* Body - 2-col layout */}
       <div className="px-8 pb-12 grid grid-cols-1 xl:grid-cols-3 gap-5">
         {/* Left col: audit + branding */}
         <div className="xl:col-span-1 space-y-5">
           <AuditPanel slug={slug} />
+          <VideoDefaultsPanel slug={slug} />
+          <AICoachPanel slug={slug} />
+          <BenchmarkPanel slug={slug} />
+          <KeywordClustersPanel slug={slug} />
+          <RankTrackingPanel slug={slug} />
           <OAuthDiagnosticsPanel />
           <BrandingPanel slug={slug} channel={channel} />
         </div>

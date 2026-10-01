@@ -22,7 +22,8 @@
       "@lib/*": ["src/lib/*"],
       "@types/*": ["src/types/*"],
       "@api/*": ["src/api/*"],
-      "@store/*": ["src/store/*"]
+      "@store/*": ["src/store/*"],
+      "@content/*": ["src/content/*"]
     }
   },
   "include": ["src"],

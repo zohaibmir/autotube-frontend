@@ -45,7 +45,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     (message: string, variant: ToastVariant = 'info', duration = 4000) => {
       const id = Math.random().toString(36).slice(2)
       setToasts((prev) => {
-        // Max 3 visible at once — drop oldest
+        // Max 3 visible at once - drop oldest
         const next = prev.length >= 3 ? prev.slice(1) : prev
         return [...next, { id, message, variant, duration }]
       })
@@ -66,7 +66,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   )
 }
 
-// ─── Toast list (portal — bottom-right) ───────────────────────────────────────
+// ─── Toast list (portal - bottom-right) ───────────────────────────────────────
 
 function ToastList({ toasts, onRemove }: { toasts: Toast[]; onRemove: (id: string) => void }) {
   if (toasts.length === 0) return null

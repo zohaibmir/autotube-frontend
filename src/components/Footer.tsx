@@ -1,4 +1,5 @@
 import React from 'react'
+import { Link } from 'react-router-dom'
 
 export default function Footer() {
   return (
@@ -8,8 +9,9 @@ export default function Footer() {
           <div>
             <h3 className="font-bold mb-4">Product</h3>
             <ul className="space-y-2 text-sky-100">
-              <li><a href="#" className="hover:text-white">Features</a></li>
-              <li><a href="#" className="hover:text-white">Pricing</a></li>
+              <li><Link to="/how-it-works" className="hover:text-white">Features</Link></li>
+              <li><Link to="/pricing" className="hover:text-white">Pricing</Link></li>
+              <li><Link to="/tools/seo-analyzer" className="hover:text-white">Free SEO Analyzer</Link></li>
               <li><a href="#" className="hover:text-white">Security</a></li>
             </ul>
           </div>
@@ -17,8 +19,8 @@ export default function Footer() {
           <div>
             <h3 className="font-bold mb-4">Company</h3>
             <ul className="space-y-2 text-sky-100">
-              <li><a href="#" className="hover:text-white">About</a></li>
-              <li><a href="#" className="hover:text-white">Blog</a></li>
+              <li><Link to="/about" className="hover:text-white">About</Link></li>
+              <li><Link to="/blog" className="hover:text-white">Blog</Link></li>
               <li><a href="#" className="hover:text-white">Careers</a></li>
             </ul>
           </div>
@@ -37,13 +39,13 @@ export default function Footer() {
             <ul className="space-y-2 text-sky-100">
               <li><a href="#" className="hover:text-white">Privacy</a></li>
               <li><a href="#" className="hover:text-white">Terms</a></li>
-              <li><a href="#" className="hover:text-white">Contact</a></li>
+              <li><Link to="/contact" className="hover:text-white">Contact</Link></li>
             </ul>
           </div>
         </div>
 
         <div className="border-t border-sky-500 pt-8 text-center text-sky-100">
-          <p>&copy; 2026 YouTube Automation. All rights reserved.</p>
+          <p>&copy; 2026 Channelpilot. All rights reserved.</p>
         </div>
       </div>
     </footer>

@@ -8,9 +8,10 @@ import { useCreateStore, type CreateStep } from '@store/create'
 const STEPS: { id: CreateStep; label: string; path: string }[] = [
   { id: 1, label: 'Ideas',     path: '/app/create/ideas'     },
   { id: 2, label: 'Script',    path: '/app/create/script'    },
-  { id: 3, label: 'SEO',       path: '/app/create/seo'       },
-  { id: 4, label: 'Thumbnail', path: '/app/create/thumbnail' },
-  { id: 5, label: 'Submit',    path: '/app/create/submit'    },
+  { id: 3, label: 'Visuals',   path: '/app/create/visuals'   },
+  { id: 4, label: 'SEO',       path: '/app/create/seo'       },
+  { id: 5, label: 'Thumbnail', path: '/app/create/thumbnail' },
+  { id: 6, label: 'Submit',    path: '/app/create/submit'    },
 ]
 
 // ─── Stepper ──────────────────────────────────────────────────────────────────
