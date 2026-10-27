@@ -6,12 +6,25 @@
  *
  * Coverage: 30 endpoints across all feature areas.
  * Run: npx playwright test e2e/api.spec.ts
+ *
+ * The two queue tests write (`POST /api/queue/add`, `DELETE /api/queue/delete/:id`): they add a real row to the
+ * shared project's `topic_queue`, which `.github/workflows/e2e.yml` promises a default dispatch will not do.
+ * They sit behind `E2E_CONFIRM_TARGET` like the other mutating specs — and a topic sitting in the queue while
+ * it is *due* can be claimed by the scheduler and rendered for real, so a stray row is not merely untidy.
  */
 import { test, expect, request } from '@playwright/test'
+import { TEST_EMAIL as EMAIL, TEST_PASSWORD as PASS } from './helpers'
 
-const API  = process.env.TEST_API_URL  || 'http://localhost:8080'
-const EMAIL = process.env.TEST_USER_EMAIL    || 'zohaib.mir@gmail.com'
-const PASS  = process.env.TEST_USER_PASSWORD || 'mir.mir1121'
+const API = process.env.TEST_API_URL || 'http://localhost:8080'
+
+// Names the environment the queue writes may target. Unset = those two tests skip.
+const target = process.env.E2E_CONFIRM_TARGET
+const WRITE_SKIP = 'Set E2E_CONFIRM_TARGET to the environment these queue writes may use '
+  + '(e.g. E2E_CONFIRM_TARGET=local). See E2E_TEST_PLAN.md §6.'
+
+if (!target) {
+  console.warn('[api] the two queue write tests are SKIPPED — E2E_CONFIRM_TARGET is not set.')
+}
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 let TOKEN = ''
@@ -115,7 +128,8 @@ test.describe('Queue endpoints', () => {
   })
 
   test('POST /api/queue/add → 200 creates item', async () => {
-    const { status, body } = await apiPost('/api/queue/add', {
+    test.skip(!target, WRITE_SKIP)
+    const { status } = await apiPost('/api/queue/add', {
       topic: `API test topic ${Date.now()}`,
       channel_slug: null,
     })
@@ -129,6 +143,7 @@ test.describe('Queue endpoints', () => {
   })
 
   test('DELETE /api/queue/delete/:id → 200', async () => {
+    test.skip(!target, WRITE_SKIP)
     if (!addedId) return // skip if add failed
     const ctx  = await request.newContext({ baseURL: API })
     const resp = await ctx.delete(`/api/queue/delete/${addedId}`, { headers: HEADERS })
@@ -248,6 +263,34 @@ test.describe('Voices endpoint', () => {
     expect(status).toBe(200)
     expect(Array.isArray(body.groups)).toBe(true)
     expect(body.groups.length).toBeGreaterThan(0)
+  })
+})
+
+// ── BRAND KIT ─────────────────────────────────────────────────────────────────
+test.describe('Brand Kit endpoints', () => {
+  test('GET /api/brand-kit?channel=demo → 200 with BrandKit', async () => {
+    const { status, body } = await apiGet('/api/brand-kit?channel=demo')
+    expect(status).toBe(200)
+    expect(body.ok).toBe(true)
+    expect(body.brand_kit).toBeDefined()
+  })
+
+  test('PUT /api/brand-kit with channel → 200 with updated BrandKit', async () => {
+    const { status, body } = await apiPost('/api/brand-kit', {
+      channel: 'demo',
+      avatar_url: 'https://example.com/avatar.png',
+    })
+    expect(status).toBe(200)
+    expect(body.ok).toBe(true)
+    expect(body.brand_kit).toBeDefined()
+  })
+
+  test('PUT /api/brand-kit with missing channel → 400', async () => {
+    const { status, body } = await apiPost('/api/brand-kit', {
+      avatar_url: 'https://example.com/avatar.png',
+    })
+    expect(status).toBe(400)
+    expect(body.ok).toBe(false)
   })
 })
 
