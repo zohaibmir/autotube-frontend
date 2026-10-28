@@ -14,6 +14,7 @@ import { useToast } from '@/components/Toast'
 
 export interface BrandKitPanelProps {
   channel?: string
+  channelName?: string
   className?: string
   load?: () => void
 }
@@ -27,7 +28,7 @@ const TEMPLATE_STYLES: Record<string, { bg: string; text: string; label: string 
   'pastel-soft': { bg: 'bg-[#FDF2F8] text-[#C026D3]', text: 'text-[#C026D3]', label: 'Pastel Soft' },
 }
 
-export function BrandKitPanel({ channel, load }: BrandKitPanelProps) {
+export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps) {
   const [kit, setKit] = useState<BrandKit>({
     channel_slug: channel ?? '',
     avatar_url: '',
@@ -43,6 +44,7 @@ export function BrandKitPanel({ channel, load }: BrandKitPanelProps) {
   const [voices, setVoices] = useState<Array<{ id: string; label: string }>>([])
   const [videos, setVideos] = useState<Array<{ id: string; label: string }>>([])
   const [voicePreviewUrl, setVoicePreviewUrl] = useState<string | null>(null)
+  const [channelDefaultVoice, setChannelDefaultVoice] = useState<string | null>(null)
   const toast = useToast()
 
   const fetchKit = useCallback(async () => {
@@ -79,6 +81,22 @@ export function BrandKitPanel({ channel, load }: BrandKitPanelProps) {
   }, [])
 
   useEffect(() => {
+    if (!channel) return
+    voiceApi
+      .channelVoice(channel)
+      .then((data) => {
+        if (data.voice_id) {
+          setChannelDefaultVoice(data.voice_id)
+          if (!kit.voice_id) {
+            setKit((prev) => ({ ...prev, voice_id: data.voice_id }))
+            setDirty(true)
+          }
+        }
+      })
+      .catch(() => {})
+  }, [channel, kit.voice_id])
+
+  useEffect(() => {
     studioApi
       .videos()
       .then((data) => {
@@ -104,10 +122,10 @@ export function BrandKitPanel({ channel, load }: BrandKitPanelProps) {
       intro_video_id: '',
       outro_video_id: '',
       thumbnail_template: 'default',
-      voice_id: '',
+      voice_id: channelDefaultVoice ?? '',
     })
     setDirty(true)
-  }, [channel])
+  }, [channel, channelDefaultVoice])
 
   const handleVoicePreview = useCallback(async (voiceId: string) => {
     try {
@@ -159,6 +177,15 @@ export function BrandKitPanel({ channel, load }: BrandKitPanelProps) {
     <section className="bg-white border border-[#E5E5E5] rounded-xl p-5">
       <div className="flex items-center justify-between mb-4">
         <div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#F5F5F5] text-[#525252] text-[10px] font-medium border border-[#E5E5E5]">
+              <span className="w-2 h-2 rounded-full bg-[#0A0A0A]" />
+              Channel
+            </span>
+            <span className="text-sm font-semibold text-[#0A0A0A]">
+              {channelName ?? channel ?? 'No channel'}
+            </span>
+          </div>
           <h3 className="text-sm font-semibold text-[#0A0A0A]">Brand Kit</h3>
           <p className="text-[11px] text-[#A3A3A3]">
             Consistent look across all videos — avatar, watermark, intro/outro,
@@ -392,11 +419,7 @@ export function BrandKitPanel({ channel, load }: BrandKitPanelProps) {
                     setKit({ ...kit, thumbnail_template: t.value })
                     setDirty(true)
                   }}
-                  className={`flex flex-col items-center justify-center gap-1 p-2 rounded-md border transition-colors ${
-                    isSelected
-                      ? 'border-[#0A0A0A] bg-[#0A0A0A] text-white'
-                      : 'border-[#E5E5E5] bg-white hover:bg-[#F5F5F5] hover:border-[#A3A3A3]'
-                  }`}
+                  className={`flex flex-col items-center justify-center gap-1 p-2 rounded-md border transition-colors ${isSelected ? 'border-[#0A0A0A] bg-[#0A0A0A] text-white' : 'border-[#E5E5E5] bg-white hover:bg-[#F5F5F5] hover:border-[#A3A3A3]'}`}
                 >
                   <div className={`w-8 h-8 rounded ${style.bg} ${style.text} flex items-center justify-center text-[10px] font-medium mb-1`}>
                     {t.label.charAt(0)}
@@ -478,6 +501,13 @@ export function BrandKitPanel({ channel, load }: BrandKitPanelProps) {
                 )}
               </div>
             )}
+            {channelDefaultVoice && !kit.voice_id && (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-[10px] text-[#0A0A0A] font-medium">
+                  Using channel default voice
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -498,11 +528,7 @@ export function BrandKitPanel({ channel, load }: BrandKitPanelProps) {
           <button
             onClick={save}
             disabled={!dirty || saving}
-            className={`w-full flex items-center justify-center gap-2 h-10 px-4 rounded-md font-medium text-[13px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap ${
-              saving
-                ? 'bg-[#F5F5F5] text-[#A3A3A3]'
-                : 'bg-[#0A0A0A] text-white hover:bg-[#262626]'
-            }`}
+            className={`w-full flex items-center justify-center gap-2 h-10 px-4 rounded-md font-medium text-[13px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap ${saving ? 'bg-[#F5F5F5] text-[#A3A3A3]' : 'bg-[#0A0A0A] text-white hover:bg-[#262626]'}`}
           >
             <Save size={13} strokeWidth={1.5} className={`flex-shrink-0 ${saving ? 'animate-spin' : ''}`} />
             {saving ? 'Saving…' : dirty ? 'Save brand kit' : 'Saved'}

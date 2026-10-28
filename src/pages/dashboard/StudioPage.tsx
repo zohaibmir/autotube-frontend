@@ -977,6 +977,7 @@ export default function StudioPage() {
                 <h3 className="text-sm font-semibold text-[#0A0A0A] mb-4">Brand Kit</h3>
                 <BrandKitPanel
                   channel={uploadChannel}
+                  channelName={channels.find(c => c.slug === uploadChannel)?.name ?? channels.find(c => c.slug === uploadChannel)?.slug ?? uploadChannel}
                   load={() => fetchBrandKit(uploadChannel)}
                 />
               </div>
