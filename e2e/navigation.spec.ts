@@ -8,7 +8,7 @@
  *
  * This is the fastest signal that the app hasn't broken.
  */
-import { test, expect, Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import { gotoAuthed } from './helpers'
 
 const ROUTES: Array<{ path: string; expectText: RegExp | string }> = [

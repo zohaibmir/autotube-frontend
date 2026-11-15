@@ -1,6 +1,12 @@
-import React, { lazy, Suspense } from 'react'
+import { lazy, Suspense } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import DashboardLayout from '@components/DashboardLayout'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { ToastProvider } from '@components/Toast'
+
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
+})
 
 // ── Lazy page imports - each route becomes its own JS chunk ──────────────────
 const DashboardHome     = lazy(() => import('./dashboard/DashboardHome'))
@@ -14,7 +20,7 @@ const Billing           = lazy(() => import('./dashboard/Billing'))
 const QueuePage         = lazy(() => import('./dashboard/QueuePage'))
 const AnalyticsPage     = lazy(() => import('./dashboard/AnalyticsPage'))
 const SocialPage        = lazy(() => import('./dashboard/SocialPage'))
-const StudioPage        = lazy(() => import('./dashboard/StudioPage'))
+const StudioWorkspace   = lazy(() => import('./dashboard/StudioWorkspacePage'))
 const CustomStudioPage  = lazy(() => import('./dashboard/CustomStudioPage'))
 const CalendarPage      = lazy(() => import('./dashboard/CalendarPage'))
 const KidsPage          = lazy(() => import('./dashboard/KidsPage'))
@@ -48,6 +54,8 @@ function PageSkeleton() {
 
 export default function DashboardPage() {
   return (
+    <QueryClientProvider client={queryClient}>
+    <ToastProvider>
     <DashboardLayout>
       <Suspense fallback={<PageSkeleton />}>
         <Routes>
@@ -57,12 +65,15 @@ export default function DashboardPage() {
           <Route path="/jobs/:jobId" element={<JobDetail />} />
           <Route path="/channels" element={<ChannelsPage />} />
           <Route path="/channels/:slug" element={<ChannelDetailPage />} />
+          {/* Same page, with a section selected. Kept as a separate route rather than a query param so the
+              tab is part of the path a creator bookmarks and shares. */}
+          <Route path="/channels/:slug/:tab" element={<ChannelDetailPage />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/billing" element={<Billing />} />
           <Route path="/queue" element={<QueuePage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/social" element={<SocialPage />} />
-          <Route path="/studio" element={<StudioPage />} />
+          <Route path="/studio" element={<StudioWorkspace />} />
           <Route path="/studio/custom" element={<CustomStudioPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
           <Route path="/kids" element={<KidsPage />} />
@@ -82,5 +93,7 @@ export default function DashboardPage() {
         </Routes>
       </Suspense>
     </DashboardLayout>
+    </ToastProvider>
+    </QueryClientProvider>
   )
 }

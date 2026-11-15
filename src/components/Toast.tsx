@@ -44,10 +44,19 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const addToast = useCallback(
     (message: string, variant: ToastVariant = 'info', duration = 4000) => {
       const id = Math.random().toString(36).slice(2)
+      // A structured 402 `detail` is an object, and this component renders
+      // `{toast.message}` -- React throws on an object child, taking the whole
+      // toast stack down. Coerce so no call site can do that. Callers should still
+      // prefer `apiErrorMessage()` from @lib/apiError, so the user sees the
+      // backend's message rather than this fallback.
+      const text =
+        typeof message === 'string'
+          ? message
+          : String((message as { message?: unknown })?.message ?? 'Something went wrong')
       setToasts((prev) => {
         // Max 3 visible at once - drop oldest
         const next = prev.length >= 3 ? prev.slice(1) : prev
-        return [...next, { id, message, variant, duration }]
+        return [...next, { id, message: text, variant, duration }]
       })
     },
     []

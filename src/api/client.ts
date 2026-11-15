@@ -32,6 +32,18 @@ function _drainQueue(token: string | null) {
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
+    // ── W8: structured 402 = insufficient credits ───────────────────────────
+    // The backend gates renders with a structured body:
+    //   { detail: { code: 'insufficient_credits', cost_credits, credits_remaining, … } }
+    // Dispatch a global event that DashboardLayout turns into an upgrade banner.
+    // The error is still rejected so the caller's inline handling also runs.
+    if (error.response?.status === 402) {
+      const detail = error.response?.data?.detail
+      if (detail && typeof detail === 'object' && (detail as any).code === 'insufficient_credits') {
+        window.dispatchEvent(new CustomEvent('credits:insufficient', { detail }))
+      }
+    }
+
     const original = error.config as InternalAxiosRequestConfig & { _retry?: boolean }
     // Credential endpoints return 401 for bad input — not an expired session.
     // Let the caller show the error instead of refreshing/redirecting.

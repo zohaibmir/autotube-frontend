@@ -15,8 +15,6 @@ import { useToast } from '@components/Toast'
 
 // ── Platform config ───────────────────────────────────────────────────────────
 
-type Platform = 'instagram' | 'tiktok' | 'facebook' | 'reddit' | 'telegram' | string
-
 const PLATFORM_META: Record<string, { label: string; dot: string }> = {
   instagram: { label: 'Instagram', dot: 'bg-[#E1306C]' },
   tiktok:    { label: 'TikTok',    dot: 'bg-[#010101]' },

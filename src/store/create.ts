@@ -9,6 +9,8 @@ export type CreateStep  = 1 | 2 | 3 | 4 | 5 | 6
 // Visual Formats — creation wizard "Visuals" step (see VISUAL_FORMATS_COMPETITOR_ANALYSIS.md §10.2).
 export type VisualSource = 'stock' | 'custom_video' | 'ai_image'
 export type ArtStyle = 'anime' | 'comic' | 'watercolor' | 'photorealistic' | 'storybook' | 'gothic'
+// AI image provider for the "ai_image" visual source. Empty string = platform default.
+export type ImageProvider = '' | 'openai' | 'replicate' | 'pollinations'
 
 export interface TopicIdea {
   id: string
@@ -39,12 +41,14 @@ export interface CreateState {
   selectedTopic: TopicIdea | null
   scriptContent: string
   voiceId: string
+  shortsDurationSeconds: number | null
   retentionScore: number | null
   seoPackage: SeoPackage | null
   thumbnailData: Record<string, unknown> | null
   visualSource: VisualSource
   visualCustomVideoPath: string | null
   artStyle: ArtStyle | null
+  imageProvider: ImageProvider
   bgMusicPath: string | null
 
   // Actions
@@ -54,31 +58,16 @@ export interface CreateState {
   selectTopic: (topic: TopicIdea) => void
   setScript: (content: string) => void
   setVoiceId: (voiceId: string) => void
+  setShortsDurationSeconds: (seconds: number | null) => void
   setRetentionScore: (score: number) => void
   setSeoPackage: (pkg: SeoPackage) => void
   setThumbnailData: (data: Record<string, unknown>) => void
   setVisualSource: (source: VisualSource) => void
   setVisualCustomVideoPath: (path: string | null) => void
   setArtStyle: (style: ArtStyle | null) => void
+  setImageProvider: (provider: ImageProvider) => void
   setBgMusicPath: (path: string | null) => void
   reset: () => void
-}
-
-// ─── Defaults ─────────────────────────────────────────────────────────────────
-
-const DEFAULTS: Omit<CreateState, keyof { [K in keyof CreateState as CreateState[K] extends Function ? K : never]: never }> = {
-  step:             1,
-  channelSlug:      '',
-  contentType:      'longform',
-  selectedTopic:    null,
-  scriptContent:    '',
-  retentionScore:   null,
-  seoPackage:       null,
-  thumbnailData:    null,
-  visualSource:     'stock',
-  visualCustomVideoPath: null,
-  artStyle:         null,
-  bgMusicPath:      null,
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -92,16 +81,18 @@ export const useCreateStore = create<CreateState>()(
       selectedTopic:  null,
       scriptContent:  '',
       voiceId:        '',
+      shortsDurationSeconds: null,
       retentionScore: null,
       seoPackage:     null,
       thumbnailData:  null,
       visualSource:   'stock',
       visualCustomVideoPath: null,
       artStyle:       null,
+      imageProvider:  '',
       bgMusicPath:    null,
 
       setStep:           (step)    => set({ step }),
-      setChannel:        (slug)    => set({ channelSlug: slug }),
+      setChannel:        (slug)    => set({ channelSlug: slug, shortsDurationSeconds: null }),
       setContentType:    (type)    => set({ contentType: type }),
       // Picking a topic must also clear any leftover script/SEO/thumbnail/
       // retention data from a PREVIOUS topic's draft - otherwise a stale
@@ -110,22 +101,24 @@ export const useCreateStore = create<CreateState>()(
       selectTopic:       (topic)   => set({
         selectedTopic: topic, step: 2,
         scriptContent: '', seoPackage: null, thumbnailData: null, retentionScore: null,
-        visualSource: 'stock', visualCustomVideoPath: null, artStyle: null, bgMusicPath: null,
+        visualSource: 'stock', visualCustomVideoPath: null, artStyle: null, imageProvider: '', bgMusicPath: null,
       }),
       setScript:         (content) => set({ scriptContent: content }),
       setVoiceId:        (voiceId) => set({ voiceId }),
+      setShortsDurationSeconds: (seconds) => set({ shortsDurationSeconds: seconds }),
       setRetentionScore: (score)   => set({ retentionScore: score }),
       setSeoPackage:     (pkg)     => set({ seoPackage: pkg }),
       setThumbnailData:  (data)    => set({ thumbnailData: data }),
       setVisualSource:   (source)  => set({ visualSource: source }),
       setVisualCustomVideoPath: (path) => set({ visualCustomVideoPath: path }),
       setArtStyle:       (style)   => set({ artStyle: style }),
+      setImageProvider:  (provider) => set({ imageProvider: provider }),
       setBgMusicPath:    (path)    => set({ bgMusicPath: path }),
       reset: () => set({
         step: 1, channelSlug: '', contentType: 'longform',
-        selectedTopic: null, scriptContent: '', voiceId: '', retentionScore: null,
+        selectedTopic: null, scriptContent: '', voiceId: '', retentionScore: null, shortsDurationSeconds: null,
         seoPackage: null, thumbnailData: null,
-        visualSource: 'stock', visualCustomVideoPath: null, artStyle: null, bgMusicPath: null,
+        visualSource: 'stock', visualCustomVideoPath: null, artStyle: null, imageProvider: '', bgMusicPath: null,
       }),
     }),
     {

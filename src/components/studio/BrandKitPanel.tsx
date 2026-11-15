@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect } from 'react'
+import { useCallback, useState, useEffect, useRef } from 'react'
 import {
   Mic,
   Image,
@@ -11,12 +11,12 @@ import {
 } from 'lucide-react'
 import { brandKitApi, voiceApi, studioApi, type BrandKit } from '@/api/services'
 import { useToast } from '@/components/Toast'
+import { apiErrorMessage } from '@/lib/apiError'
 
 export interface BrandKitPanelProps {
   channel?: string
   channelName?: string
   className?: string
-  load?: () => void
 }
 
 const TEMPLATE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
@@ -28,7 +28,11 @@ const TEMPLATE_STYLES: Record<string, { bg: string; text: string; label: string 
   'pastel-soft': { bg: 'bg-[#FDF2F8] text-[#C026D3]', text: 'text-[#C026D3]', label: 'Pastel Soft' },
 }
 
-export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps) {
+export function BrandKitPanel(props: BrandKitPanelProps) {
+  return <ChannelBrandKitPanel key={props.channel || ''} {...props} />
+}
+
+function ChannelBrandKitPanel({ channel, channelName }: BrandKitPanelProps) {
   const [kit, setKit] = useState<BrandKit>({
     channel_slug: channel ?? '',
     avatar_url: '',
@@ -41,28 +45,47 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const [voices, setVoices] = useState<Array<{ id: string; label: string }>>([])
   const [videos, setVideos] = useState<Array<{ id: string; label: string }>>([])
-  const [voicePreviewUrl, setVoicePreviewUrl] = useState<string | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [supportErrors, setSupportErrors] = useState<string[]>([])
   const [channelDefaultVoice, setChannelDefaultVoice] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const previewUrlRef = useRef<string | null>(null)
   const toast = useToast()
+  const showError = toast.error
+
+  const stopPreview = useCallback(() => {
+    audioRef.current?.pause()
+    audioRef.current = null
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+    previewUrlRef.current = null
+  }, [])
+
+  useEffect(() => stopPreview, [stopPreview])
 
   const fetchKit = useCallback(async () => {
+    if (!channel) return
     setLoading(true)
+    setLoadError(null)
     try {
       const data = await brandKitApi.get(channel)
       setKit(data)
+      setLoaded(true)
       setDirty(false)
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Failed to load brand kit')
+    } catch (err) {
+      setLoadError(apiErrorMessage(err, 'Failed to load brand kit'))
     } finally {
       setLoading(false)
     }
-  }, [channel, toast])
+  }, [channel])
 
   useEffect(() => {
-    if (load) fetchKit()
-  }, [load, fetchKit])
+    void fetchKit()
+  }, [fetchKit])
 
   useEffect(() => {
     voiceApi
@@ -77,7 +100,7 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
         })
         setVoices(allVoices)
       })
-      .catch(() => {})
+      .catch(error => setSupportErrors(errors => [...errors, apiErrorMessage(error, 'Voice list unavailable.')]))
   }, [])
 
   useEffect(() => {
@@ -87,26 +110,23 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
       .then((data) => {
         if (data.voice_id) {
           setChannelDefaultVoice(data.voice_id)
-          if (!kit.voice_id) {
-            setKit((prev) => ({ ...prev, voice_id: data.voice_id }))
-            setDirty(true)
-          }
         }
       })
-      .catch(() => {})
-  }, [channel, kit.voice_id])
+      .catch(error => setSupportErrors(errors => [...errors, apiErrorMessage(error, 'Channel voice unavailable.')]))
+  }, [channel])
 
   useEffect(() => {
     studioApi
       .videos()
       .then((data) => {
-        const list: Array<{ id: string; label: string }> = (data.videos ?? []).map((v: any) => ({
+        if (!data.ok) throw new Error(data.error || 'Could not load intro/outro videos.')
+        const list: Array<{ id: string; label: string }> = (data.videos ?? []).map((v: { path: string; name: string; size_mb: number }) => ({
           id: v.path,
           label: `${v.name} (${v.size_mb} MB)`,
         }))
         setVideos(list)
       })
-      .catch(() => {})
+      .catch(error => setSupportErrors(errors => [...errors, apiErrorMessage(error, 'Intro/outro video list unavailable.')]))
   }, [])
 
   const clearField = useCallback((field: keyof BrandKit) => {
@@ -128,34 +148,42 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
   }, [channel, channelDefaultVoice])
 
   const handleVoicePreview = useCallback(async (voiceId: string) => {
+    setPreviewing(true)
+    stopPreview()
     try {
       const url = await voiceApi.preview(voiceId)
-      setVoicePreviewUrl(url)
       const audio = new Audio(url)
-      audio.play()
-    } catch {
-      // preview is optional
+      previewUrlRef.current = url
+      audioRef.current = audio
+      audio.onended = stopPreview
+      await audio.play()
+    } catch (error) {
+      stopPreview()
+      showError(apiErrorMessage(error, 'Voice preview failed'))
+    } finally {
+      setPreviewing(false)
     }
-  }, [])
+  }, [showError, stopPreview])
 
   const save = async (e?: React.FormEvent) => {
     e?.preventDefault()
     setSaving(true)
+    setSaveError(null)
     try {
       const next = await brandKitApi.upsert({
         channel,
-        avatar_url: kit.avatar_url || null,
-        watermark_url: kit.watermark_url || null,
-        intro_video_id: kit.intro_video_id || null,
-        outro_video_id: kit.outro_video_id || null,
+        avatar_url: kit.avatar_url || '',
+        watermark_url: kit.watermark_url || '',
+        intro_video_id: kit.intro_video_id || '',
+        outro_video_id: kit.outro_video_id || '',
         thumbnail_template: kit.thumbnail_template || 'default',
-        voice_id: kit.voice_id || null,
+        voice_id: kit.voice_id || '',
       })
       setKit(next)
       setDirty(false)
       toast.success('Brand kit saved')
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Failed to save brand kit')
+    } catch (err) {
+      setSaveError(apiErrorMessage(err, 'Failed to save brand kit'))
     } finally {
       setSaving(false)
     }
@@ -174,7 +202,7 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
     'w-full h-9 px-3 py-2 text-[13px] text-[#0A0A0A] bg-white border border-[#E5E5E5] rounded-md focus:outline-none focus:border-[#0A0A0A] transition-colors'
 
   return (
-    <section className="bg-white border border-[#E5E5E5] rounded-xl p-5">
+    <section className="bg-white border border-[#E5E5E5] rounded-xl p-[16px] sm:p-[24px]">
       <div className="flex items-center justify-between mb-4">
         <div>
           <div className="flex items-center gap-2 mb-1">
@@ -188,8 +216,8 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
           </div>
           <h3 className="text-sm font-semibold text-[#0A0A0A]">Brand Kit</h3>
           <p className="text-[11px] text-[#A3A3A3]">
-            Consistent look across all videos — avatar, watermark, intro/outro,
-            thumbnail style, and voice.
+            Save per-channel style preferences. These settings do not retrofit published videos
+            or automatically apply every branding field to pipeline renders.
           </p>
         </div>
         {loading && (
@@ -200,7 +228,12 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
         )}
       </div>
 
-      <div className="space-y-5">
+      {loadError && <div role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+        {loadError} <button type="button" className="underline" onClick={fetchKit}>Retry loading</button>
+      </div>}
+      {saveError && <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{saveError} Your changes are still here; try saving again.</p>}
+      {supportErrors.length > 0 && <p role="status" className="mb-3 text-xs text-amber-800">{[...new Set(supportErrors)].join(' ')}</p>}
+      <fieldset disabled={loading || saving || !channel || !loaded} className="space-y-5 disabled:opacity-60">
         {/* ── Visual Identity ── */}
         <div>
           <h4 className="text-[10px] font-semibold uppercase tracking-wider text-[#525252] mb-3">
@@ -225,6 +258,7 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
               </div>
               <input
                 value={kit.avatar_url ?? ''}
+                aria-label="Avatar URL"
                 onChange={(e) => {
                   setKit({ ...kit, avatar_url: e.target.value })
                   setDirty(true)
@@ -272,6 +306,7 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
               </div>
               <input
                 value={kit.watermark_url ?? ''}
+                aria-label="Watermark URL"
                 onChange={(e) => {
                   setKit({ ...kit, watermark_url: e.target.value })
                   setDirty(true)
@@ -308,7 +343,7 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
           <h4 className="text-[10px] font-semibold uppercase tracking-wider text-[#525252] mb-3">
             Video Bookends
           </h4>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center gap-1">
                 <label className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-[#525252]">
@@ -424,7 +459,7 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
                   <div className={`w-8 h-8 rounded ${style.bg} ${style.text} flex items-center justify-center text-[10px] font-medium mb-1`}>
                     {t.label.charAt(0)}
                   </div>
-                  <span className={`text-[10px] font-medium ${isSelected ? 'text-[#0A0A0A]' : 'text-[#525252]'}`}>
+                  <span className={`text-[10px] font-medium ${isSelected ? 'text-white' : 'text-[#525252]'}`}>
                     {t.label}
                   </span>
                 </button>
@@ -446,6 +481,7 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
               <div className="flex flex-col gap-1.5">
                 <select
                   value={kit.voice_id || ''}
+                  aria-label="Default voice"
                   onChange={(e) => {
                     setKit({ ...kit, voice_id: e.target.value })
                     setDirty(true)
@@ -463,11 +499,11 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => handleVoicePreview(kit.voice_id!)}
-                      disabled={!voicePreviewUrl}
+                      disabled={previewing}
                       className="flex items-center gap-2 h-8 px-3 text-[11px] font-medium rounded-md border border-[#E5E5E5] bg-white text-[#525252] hover:bg-[#F5F5F5] disabled:opacity-40 transition-colors"
                     >
                       <Play size={12} strokeWidth={1.5} />
-                      Preview voice
+                      {previewing ? 'Loading preview...' : 'Preview voice'}
                     </button>
                     <button
                       onClick={() => clearField('voice_id')}
@@ -483,6 +519,7 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
               <div className="flex flex-col gap-1.5">
                 <input
                   value={kit.voice_id ?? ''}
+                  aria-label="Default voice"
                   onChange={(e) => {
                     setKit({ ...kit, voice_id: e.target.value })
                     setDirty(true)
@@ -515,11 +552,11 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
         <div className="pt-3 border-t border-[#F5F5F5]">
           <div className="flex items-center justify-between gap-2 mb-2">
             <span className="text-[11px] text-[#A3A3A3]">
-              {dirty ? 'Unsaved changes' : 'Up to date'}
+              {!loaded ? 'Brand kit not loaded' : dirty ? 'Unsaved changes' : 'Up to date'}
             </span>
             <button
               onClick={resetAll}
-              disabled={!dirty || saving}
+              disabled={saving}
               className="text-[10px] text-[#DC2626] hover:text-[#B91C1C] px-2 py-1 rounded hover:bg-[#FEF2F2] disabled:opacity-40 transition-colors whitespace-nowrap"
             >
               Reset all
@@ -531,10 +568,10 @@ export function BrandKitPanel({ channel, channelName, load }: BrandKitPanelProps
             className={`w-full flex items-center justify-center gap-2 h-10 px-4 rounded-md font-medium text-[13px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap ${saving ? 'bg-[#F5F5F5] text-[#A3A3A3]' : 'bg-[#0A0A0A] text-white hover:bg-[#262626]'}`}
           >
             <Save size={13} strokeWidth={1.5} className={`flex-shrink-0 ${saving ? 'animate-spin' : ''}`} />
-            {saving ? 'Saving…' : dirty ? 'Save brand kit' : 'Saved'}
+            {saving ? 'Saving…' : !loaded ? 'Load brand kit first' : dirty ? 'Save brand kit' : 'Saved'}
           </button>
         </div>
-      </div>
+      </fieldset>
     </section>
   )
 }

@@ -1,10 +1,9 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HelmetProvider } from 'react-helmet-async'
 import * as Sentry from '@sentry/react'
 import App from './App.tsx'
-import { ToastProvider } from '@components/Toast'
+import { replayConsent, CONSENT_EVENT } from '@lib/consent'
 import './index.css'
 
 // Unregister any stale service workers (e.g. from old PWA builds)
@@ -15,26 +14,59 @@ if ('serviceWorker' in navigator) {
 }
 
 // ── Sentry — same project as the backend ────────────────────────────────────
+//
+// Session Replay records what the user actually sees. This previously ran with
+// maskAllText:false / blockAllMedia:false on 100% of production error sessions,
+// which captured unmasked screen text — including generated scripts, prompts,
+// and the OAuth Client Secret field in Settings. That was a privacy hole, and
+// because Replay writes to the device it is also non-essential storage under
+// ePrivacy Art. 5(3), so it must not run before consent.
+//
+// Now: error monitoring and tracing stay on (they keep the service working and
+// record no screen), Replay is attached only once the user opts in, and masking
+// is on regardless — so even a consented replay cannot capture text or media.
+const replayAllowed = () => replayConsent() === 'granted'
+
+let replayAttached = false
+let replayLoading = false
+async function attachReplay() {
+  if (replayAttached || replayLoading || !import.meta.env.VITE_SENTRY_DSN) return
+  replayLoading = true
+  try {
+    const { replayIntegration } = await import('@sentry/replay')
+    if (!replayAllowed()) return
+    Sentry.addIntegration(replayIntegration({
+      maskAllText: true,     // never capture text, including user content
+      maskAllInputs: true,   // never capture what is typed into forms
+      blockAllMedia: true,   // never capture images, audio or video
+    }))
+    replayAttached = true
+  } catch (error) {
+    Sentry.captureException(error)
+    console.error('Unable to load consented error replay.', error)
+  } finally {
+    replayLoading = false
+  }
+}
+
 if (import.meta.env.VITE_SENTRY_DSN) {
   Sentry.init({
     dsn: import.meta.env.VITE_SENTRY_DSN,
     environment: import.meta.env.MODE,        // 'development' | 'production'
     tracesSampleRate: import.meta.env.PROD ? 0.2 : 0,
+    // Sampling only takes effect once the integration is attached below.
     replaysOnErrorSampleRate: import.meta.env.PROD ? 1.0 : 0,
-    integrations: [
-      Sentry.browserTracingIntegration(),
-      Sentry.replayIntegration({ maskAllText: false, blockAllMedia: false }),
-    ],
+    integrations: [Sentry.browserTracingIntegration()],
   })
+  if (replayAllowed()) attachReplay()
 }
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: { staleTime: 30_000, retry: 1 },
-  },
+// The user can change their mind from the banner or the Cookie Policy page.
+window.addEventListener(CONSENT_EVENT, () => {
+  if (replayAllowed()) attachReplay()
 })
 
-ReactDOM.createRoot(document.getElementById('root')).render(
+const app = (
   <React.StrictMode>
     <Sentry.ErrorBoundary fallback={
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -47,13 +79,18 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         </div>
       </div>
     }>
-      <QueryClientProvider client={queryClient}>
         <HelmetProvider>
-          <ToastProvider>
-            <App />
-          </ToastProvider>
+          <App />
         </HelmetProvider>
-      </QueryClientProvider>
     </Sentry.ErrorBoundary>
-  </React.StrictMode>,
+  </React.StrictMode>
 )
+
+const root = document.getElementById('root')
+if (root.dataset.prerendered === 'true') {
+  ReactDOM.hydrateRoot(root, app)
+} else {
+  // The unrendered private/dev shell has no React-owned metadata to hydrate.
+  document.head.querySelectorAll('[data-seo]').forEach((tag) => tag.remove())
+  ReactDOM.createRoot(root).render(app)
+}

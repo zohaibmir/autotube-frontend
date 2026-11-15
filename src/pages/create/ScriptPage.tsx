@@ -1,13 +1,19 @@
-import React, { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronRight, ChevronDown, RefreshCw, Copy, Loader2, CheckCheck } from 'lucide-react'
 import { useCreateStore } from '@store/create'
 import { aiApi, voiceApi } from '@api/services'
 import { useToast } from '@components/Toast'
+import ShortsDurationSelect, { useShortsDuration } from '@components/ShortsDurationSelect'
 
 // ─── Config types ─────────────────────────────────────────────────────────────
 
 type DurationOption  = '3–5 min' | '8–12 min' | '15–20 min' | '25+ min'
+
+// Spoken-narration pace for the duration estimate. 140 wpm is a typical
+// documentary/narration pace; kids' story narration runs a little slower, so
+// this reads as a slight underestimate rather than an over-promise to the user.
+const WORDS_PER_MINUTE = 140
 type StyleOption     = 'Educational' | 'Storytelling' | 'Opinion' | 'Tutorial' | 'Interview'
 type HookOption      = 'Question' | 'Statistic' | 'Controversy' | 'Story' | 'Bold claim'
 type StructureOption = 'Viral Story' | 'Record Breaker' | 'Rule Explainer' | 'Mystery & Twist' | 'Controversy w/ context' | 'Deep Dive'
@@ -88,6 +94,7 @@ export default function ScriptPage() {
     contentType,
     voiceId,
     setVoiceId,
+    shortsDurationSeconds, setShortsDurationSeconds,
   } = useCreateStore()
 
   // Config state
@@ -123,40 +130,51 @@ export default function ScriptPage() {
 
   const topicText = selectedTopic?.topic ?? ''
   const isShort = contentType === 'short'
+  const shortDuration = useShortsDuration(channelSlug, shortsDurationSeconds)
 
   const buildPrompt = () => {
     if (isShort) {
-      // Shorts are a completely different format - a single, atomic ~45-60s
-      // vertical-video script, not a shortened long-form video. Ignoring this
-      // previously produced 800+ word "Shorts" that were really 8-12 min
-      // long-form scripts, since this prompt used the same Duration/Style
-      // config regardless of content type.
-      const shortSystemPrompt = `You are an expert YouTube Shorts scriptwriter specialising in viral, high-retention short-form content — the style used by top-performing story/facts Shorts channels.
-Channel niche: ${channelSlug || 'general'}
+      const seconds = shortDuration.seconds
+      const lower = Math.ceil(seconds * .85 * WORDS_PER_MINUTE / 60)
+      const upper = Math.floor(Math.min(180, seconds * 1.15) * WORDS_PER_MINUTE / 60)
+      const stamp = (fraction: number) => {
+        const total = Math.round(seconds * fraction)
+        return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+      }
+      const shortSystemPrompt = `You write original, clear short-form stories that deliver a specific, credible promise.
+Channel context: ${channelSlug || 'general'} (a channel identifier, not proof of its niche)
 Hook type: ${hook}
 ${extraContext ? `Extra context: ${extraContext}` : ''}
 ${guidance ? `Guidance: ${guidance}` : ''}
 
-Write a single, dedicated 45-60 second YouTube Short script (NOT a summary of a longer video).
+Write a single, dedicated ${seconds}-second YouTube Short script (NOT a summary of a longer video).
 
-Structure the script as short, punchy TIMESTAMPED BEATS - not flowing paragraphs. Each beat is 1-3 SHORT sentences (staccato, fragment-style - think "He won journalism's highest award. Died 107 days later." not a long explanatory sentence). Use this exact beat structure, adapted to the topic:
+Use this five-phase structure with TIMESTAMPED BEATS, each label alone on its own line and only spoken
+narration underneath. Times are planning guides, not measured audio durations:
+[0:00-0:03] HOOK - one short, concrete opening line; show the unusual subject or action immediately.
+[0:03-${stamp(.22)}] CONTEXT - establish what the viewer needs to understand the question.
+[${stamp(.22)}-${stamp(.55)}] EXPLANATION - explain the mechanism for science/nature, or the conflict for a human story.
+[${stamp(.55)}-${stamp(.9)}] PAYOFF - answer the opening question explicitly with the key detail.
+[${stamp(.9)}-${stamp(1)}] CALLBACK - a brief closing insight tied to the opening, not a second story.
+For stories over 60 seconds, split middle beats into additional distinct visual scenes.
 
-[0:00-0:03] HOOK + MICRO-HOOK - the single most shocking/curious fact stated in 2 short fragments, plus a one-line parenthetical curiosity question, e.g. "(Why? What happened next?)"
-[0:03-0:08] MOMENT - the specific scene/event, in fragments (who, what, where - one short line each)
-[0:08-0:15] REACTION - what happened immediately after, in short beats
-[0:15-0:25] CONSEQUENCE - the twist/turn/complication, in short beats (a real quote or claim on its own line if relevant)
-[0:25-0:35] PAYOFF - the resolution/outcome, stated plainly, in fragments
-[0:35-0:42] REFRAME - one or two lines that recontextualize the whole story (the "gut-punch" insight)
-[0:42-0:45] CTA - this is a STANDALONE Short (no companion long-form video exists), so end on a tension-based YES/NO question tied directly to the story's theme (NOT a generic "subscribe" or "watch the full video" line - there is no full video to send viewers to). Format like:
-"Does X require Y?
-
-[YES / NO]"
-If the topic genuinely doesn't support a clean binary question, fall back to "Follow for more stories like this" instead - never reference a "full video".
+Adapt to the subject: animals, Earth, and space need a clear explanation, not invented
+human reactions or a forced tragedy. Human stories can use stakes and consequences.
+End on the payoff/callback by default. A natural question is optional; do not force
+a binary CTA, ask for a subscription, or promise a full video that does not exist.
 
 Hard rules:
 - The hook must grab attention in the FIRST 3 seconds - no "Hi guys", no channel intro
 - Focus on ONE compelling idea, fact, or question - do not try to cover multiple points
-- Total spoken word count: 70-100 words (this style has more pauses between short fragments than flowing prose, so a lower word count is needed to stay within 45-60 seconds)
+- For English, plan ${lower}-${upper} spoken words at approximately 140 words/minute, excluding labels.
+  For other languages, write naturally for ${seconds} seconds, not an English word-count quota.
+  Actual runtime depends on voice and pauses and will be checked against generated audio.
+  Do not pad with repetition or empty pauses.
+- Do not invent quotes, dates, studies, sources, numbers, or dramatic events.
+  Qualify uncertainty; distinguish hypotheses from observed facts.
+  Do not claim you verified sources unless supporting evidence is supplied.
+- No generic suspense filler ("you won't believe", "the truth will shock you"),
+  greetings, stage directions, or bracketed YES/NO choices in narration.
 - Put each beat's timestamp label on its own line, then the short fragment lines beneath it
 
 Do NOT include stage directions or camera notes. Write as if spoken aloud naturally, beat by beat.`
@@ -186,6 +204,11 @@ Do NOT include timestamps or stage directions. Write as if spoken aloud naturall
   }
 
   const handleGenerate = async () => {
+    if (isShort && (shortDuration.loading || shortDuration.error)) {
+      toast.error('Load the channel default or select an explicit Shorts length first.')
+      return
+    }
+    if (isShort) setShortsDurationSeconds(shortDuration.seconds)
     if (!topicText) {
       toast.error('No topic selected - go back to Ideas first')
       return
@@ -228,9 +251,9 @@ Do NOT include timestamps or stage directions. Write as if spoken aloud naturall
           // Genuine network/connectivity failure - fall back to a local
           // mock script so the user isn't fully blocked, but tell them.
           toast.error('Could not reach the AI service - showing a placeholder script')
-          const mock = `[HOOK]\nHere's the brutal truth that nobody in the ${topicText.split(' ').slice(0,3).join(' ')} space wants to admit...\n\n[INTRO]\nWelcome back. Today we're diving deep into ${topicText}. If you've been struggling with this, stick around - because by the end of this video you'll have a clear framework you can apply immediately.\n\n[MAIN CONTENT]\n## The Core Problem\nMost people approach this completely backwards. They focus on the output before building the system...\n\n## The Framework\n1. Start with the end in mind\n2. Build your foundation first\n3. Iterate rapidly, not perfectly\n\n## Real Examples\nLet me show you exactly what this looks like in practice...\n\n[CTA]\nIf this was useful, hit subscribe - I post every week on topics like this. Drop your biggest takeaway in the comments below.`
-          setLocalScript(mock)
-          setScript(mock)
+          const placeholder = `[HOOK]\nHere's the brutal truth that nobody in the ${topicText.split(' ').slice(0,3).join(' ')} space wants to admit...\n\n[INTRO]\nWelcome back. Today we're diving deep into ${topicText}. If you've been struggling with this, stick around - because by the end of this video you'll have a clear framework you can apply immediately.\n\n[MAIN CONTENT]\n## The Core Problem\nMost people approach this completely backwards. They focus on the output before building the system...\n\n## The Framework\n1. Start with the end in mind\n2. Build your foundation first\n3. Iterate rapidly, not perfectly\n\n## Real Examples\nLet me show you exactly what this looks like in practice...\n\n[CTA]\nIf this was useful, hit subscribe - I post every week on topics like this. Drop your biggest takeaway in the comments below.`
+          setLocalScript(placeholder)
+          setScript(placeholder)
         }
       }
     } finally {
@@ -249,8 +272,12 @@ Do NOT include timestamps or stage directions. Write as if spoken aloud naturall
         const detail = err.response?.data?.detail
         toast.error(typeof detail === 'string' ? detail : 'Failed to score script')
       } else {
-        // Genuine network failure - fall back to a placeholder score
-        setRetentionScore(Math.floor(Math.random() * 25) + 60)
+        // No response at all: the request never reached the API. Do NOT invent a score. The old
+        // fallback was `Math.floor(Math.random() * 25) + 60` -- a number that changes on every retry,
+        // rendered by the same gauge as a real reading, which a creator would then act on. Clear it
+        // and say so, exactly as the script fallback above does.
+        setRetentionScore(0)
+        toast.error('Could not reach the AI service - no retention score was produced')
       }
     } finally {
       setScoring(false)
@@ -269,6 +296,11 @@ Do NOT include timestamps or stage directions. Write as if spoken aloud naturall
     setStep(3)
     navigate('/app/create/visuals')
   }
+
+  const wordCount  = script.split(/\s+/).filter(Boolean).length
+  const estMinutes = wordCount > 0
+    ? Math.max(1, Math.round(wordCount / WORDS_PER_MINUTE))
+    : 0
 
   return (
     <div className="max-w-[1100px] mx-auto px-6 py-6">
@@ -297,10 +329,11 @@ Do NOT include timestamps or stage directions. Write as if spoken aloud naturall
         <div className="w-[220px] flex-shrink-0 space-y-4">
           <div className="bg-white border border-[#E5E5E5] rounded-lg p-4 space-y-4">
             {isShort ? (
-              <div className="flex items-start gap-2 p-2.5 bg-[#EFF6FF] border border-[#BFDBFE] rounded">
-                <p className="text-[11px] text-[#1E40AF] leading-relaxed">
-                  Shorts are a single ~45-60s script - Duration/Style/Structure don't apply. Only Hook type and Guidance affect it below.
-                </p>
+              <div className="space-y-2">
+                <ShortsDurationSelect value={shortsDurationSeconds} onChange={setShortsDurationSeconds}
+                  channelDefault={shortDuration.channelDefault} />
+                {shortDuration.error && <p role="alert" className="text-xs text-red-600">Could not load the channel default. Retry or select an explicit length.</p>}
+                <p className="text-[11px] text-[#1E40AF]">Target: {shortDuration.seconds}s. One complete story; keep the opening hook brief.</p>
               </div>
             ) : (
               <>
@@ -376,7 +409,7 @@ Do NOT include timestamps or stage directions. Write as if spoken aloud naturall
           {/* Generate button */}
           <button
             onClick={handleGenerate}
-            disabled={streaming || !topicText}
+            disabled={streaming || !topicText || (isShort && (shortDuration.loading || !!shortDuration.error))}
             className="w-full h-9 bg-[#0A0A0A] text-white text-[12px] font-medium rounded hover:bg-[#262626] transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
           >
             {streaming ? (
@@ -407,7 +440,9 @@ Do NOT include timestamps or stage directions. Write as if spoken aloud naturall
           {/* Toolbar */}
           {script && (
             <div className="flex items-center justify-between mb-2">
-              <p className="text-[11px] text-[#A3A3A3]">{script.split(/\s+/).filter(Boolean).length} words</p>
+              <p className="text-[11px] text-[#A3A3A3]">
+                {wordCount} words · ≈{estMinutes} min spoken
+              </p>
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleCopy}

@@ -1,13 +1,16 @@
 import React from 'react'
 import {
   Tv, CheckCircle2, XCircle, AlertCircle, Star,
-  ExternalLink, Loader, RefreshCw, Plus, RotateCcw, Pin, ChevronRight,
+  ExternalLink, RefreshCw, Plus, RotateCcw, Pin, ChevronRight,
 } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useChannels, useJobs } from '@hooks/useJobs'
 import { channelsApi } from '@api/services'
 import { useToast } from '@components/Toast'
+import { apiErrorMessage } from '@lib/apiError'
+import { openOAuthPopup } from '@lib/oauthPopup'
+import { useAuthStore } from '@store/auth'
 
 // ── Auth status config ────────────────────────────────────────────────────────
 const authConfig: Record<string, { label: string; pill: string; icon: React.ReactNode }> = {
@@ -61,42 +64,18 @@ function StatChip({ label, value }: { label: string; value: string | number }) {
   )
 }
 
-// ── OAuth popup helper ────────────────────────────────────────────────────────
-// The backend's OAuth callback page posts { type: 'yt_channel_added', ok } back
-// to window.opener and closes itself - wait for that message (or the popup
-// being closed manually) before resolving.
-function openOAuthPopup(url: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const popup = window.open(url, 'yt-oauth', 'width=520,height=640')
-    if (!popup) { resolve(false); return }
-
-    let settled = false
-    const onMessage = (event: MessageEvent) => {
-      if (event.data?.type !== 'yt_channel_added') return
-      settled = true
-      window.removeEventListener('message', onMessage)
-      clearInterval(poll)
-      resolve(Boolean(event.data.ok))
-    }
-    window.addEventListener('message', onMessage)
-
-    // Fallback: if the user closes the popup without completing OAuth
-    const poll = window.setInterval(() => {
-      if (popup.closed && !settled) {
-        clearInterval(poll)
-        window.removeEventListener('message', onMessage)
-        resolve(false)
-      }
-    }, 500)
-  })
-}
-
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function ChannelsPage() {
   const qc = useQueryClient()
   const { addToast } = useToast()
 
-  const { data: channels = [], isLoading, refetch, isFetching } = useChannels()
+  // Admins *may* list the whole deployment, but not by default: another account's channels in this list read
+  // as "the app invented channels", and the same list feeds the Studio and Calendar channel pickers. The
+  // toggle in the header is the explicit ask, and the server only honours it for admins.
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin'
+  const [showAll, setShowAll] = React.useState(false)
+  const { data: channels = [], isLoading, isFetching } = useChannels(showAll && isAdmin)
   const { data: allJobs = [] } = useJobs()
   const ch = channels as any[]
   const jobs = allJobs as any[]
@@ -127,7 +106,11 @@ export default function ChannelsPage() {
       }
       qc.invalidateQueries({ queryKey: ['channels'] })
     },
-    onError: (err: any) => addToast(err?.response?.data?.detail || 'Failed to connect channel', 'error'),
+    // `channel_limit_reached` is a structured 402 -- `detail` is an object, and
+    // handing it to addToast made React throw "Objects are not valid as a React
+    // child", taking the toast stack down. apiErrorMessage surfaces the backend's
+    // own message, which names the limit and the upgrade path.
+    onError: (err: any) => addToast(apiErrorMessage(err, 'Failed to connect channel'), 'error'),
   })
 
   const handleConnect = () => {
@@ -167,9 +150,34 @@ export default function ChannelsPage() {
       <div className="px-8 pt-8 pb-4 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-[#0A0A0A]">Channels</h1>
-          <p className="text-sm text-[#A3A3A3] mt-0.5">Manage your connected YouTube channels.</p>
+          <p className="text-sm text-[#A3A3A3] mt-0.5">
+            {showAll && isAdmin
+              ? 'Every channel on the deployment. Channels owned by other accounts are labelled.'
+              : 'Manage your connected YouTube channels.'}
+          </p>
         </div>
         <div className="flex items-center gap-2">
+          {isAdmin && (
+            <div className="flex items-center rounded-md border border-[#E5E5E5] bg-white p-0.5 text-[12px]">
+              <button
+                onClick={() => setShowAll(false)}
+                className={`px-2.5 py-1.5 rounded font-medium transition-colors ${
+                  !showAll ? 'bg-[#0A0A0A] text-white' : 'text-[#525252] hover:text-[#0A0A0A]'
+                }`}
+              >
+                Mine
+              </button>
+              <button
+                onClick={() => setShowAll(true)}
+                title="Admins can list every channel on the deployment"
+                className={`px-2.5 py-1.5 rounded font-medium transition-colors ${
+                  showAll ? 'bg-[#0A0A0A] text-white' : 'text-[#525252] hover:text-[#0A0A0A]'
+                }`}
+              >
+                All accounts
+              </button>
+            </div>
+          )}
           <button
             onClick={() => refreshMutation.mutate()}
             disabled={isFetching || refreshMutation.isPending}
@@ -235,6 +243,16 @@ export default function ChannelsPage() {
                         {channel.is_default && (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-[#FFFBEB] text-[#B45309] text-[10px] font-medium border border-[#FDE68A]">
                             <Star size={9} className="fill-[#F59E0B] text-[#F59E0B]" /> Default
+                          </span>
+                        )}
+                        {/* Admins see every channel on the deployment, including other accounts'. Without
+                            this the page looks like it invented channels the viewer never added. */}
+                        {channel.is_mine === false && (
+                          <span
+                            className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-[#F5F5F5] text-[#525252] text-[10px] font-medium border border-[#E5E5E5]"
+                            title="You are an admin, so every channel on the deployment is listed. This one belongs to another account."
+                          >
+                            {channel.owner_email || 'another account'}
                           </span>
                         )}
                       </div>

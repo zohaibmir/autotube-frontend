@@ -1,12 +1,14 @@
-import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Eye, EyeOff, Loader2, ExternalLink, Trash2, RefreshCw, Play, Square, RotateCw, Mic, Check, ChevronRight, Bell, Mail, SendHorizonal, LogOut, AlertTriangle, User2 } from 'lucide-react'
+import React, { useState, useEffect, useRef } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Eye, EyeOff, Loader2, ExternalLink, Trash2, RefreshCw, Play, Square, RotateCw, Mic, Check, ChevronRight, Mail, SendHorizonal, LogOut, AlertTriangle, X } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useByokStatus, useByokSave, useByokRemove, useChannels } from '@hooks/useJobs'
 import { useToast } from '@components/Toast'
 import { useAuthStore } from '@store/auth'
-import { socialApi, schedulerApi, automationApi, voiceApi, notificationsApi, accountApi, type VoiceEntry, type VoiceGroup, type NotificationPrefs } from '@api/services'
+import { socialApi, schedulerApi, automationApi, voiceApi, notificationsApi, accountApi, billingApi, type VoiceEntry, type VoiceGroup, type NotificationPrefs } from '@api/services'
 import apiClient from '@api/client'
+import { apiErrorMessage } from '@lib/apiError'
+import { pingExtension, linkExtension, linkFailureMessage } from '@lib/extension'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -23,6 +25,36 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'notifications', label: 'Notifications' },
   { id: 'account',     label: 'Account' },
 ]
+
+// Platform-wide tabs: their Save posts to /api/settings/sync-env, which rewrites the deployment's .env
+// (SCHEDULER_CHANNEL, TTS_PROVIDER, provider keys) for every account -- not the caller's own settings.
+// Reading them is per-user (GET /api/settings), so they never round-tripped either. Admin-only.
+// "Scheduler" is NOT in here any more: its schedule now lives per account (GET/PUT
+// /api/scheduler/schedule) and has no .env write at all.
+const PLATFORM_TABS: Tab[] = ['automation']
+
+const DAY_LABELS: Array<{ id: string; label: string }> = [
+  { id: 'mon', label: 'Mon' }, { id: 'tue', label: 'Tue' }, { id: 'wed', label: 'Wed' },
+  { id: 'thu', label: 'Thu' }, { id: 'fri', label: 'Fri' }, { id: 'sat', label: 'Sat' },
+  { id: 'sun', label: 'Sun' },
+]
+
+// The user's own zone plus the IANA list when the browser exposes it (Chrome 99+, Safari 15.4+).
+const TIMEZONES: string[] = (() => {
+  const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] }
+  let list: string[] = []
+  try {
+    list = typeof intl.supportedValuesOf === 'function' ? intl.supportedValuesOf('timeZone') : []
+  } catch { list = [] }
+  if (!list.length) {
+    list = ['UTC', 'America/Toronto', 'America/New_York', 'America/Chicago', 'America/Denver',
+            'America/Los_Angeles', 'Europe/London', 'Europe/Berlin', 'Europe/Paris',
+            'Asia/Karachi', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore', 'Australia/Sydney']
+  }
+  const local = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return '' } })()
+  return Array.from(new Set(['UTC', ...(local ? [local] : []), ...list])).sort()
+})()
+
 
 // ─── BYOK service definitions ─────────────────────────────────────────────────
 
@@ -53,6 +85,20 @@ const SERVICES: Array<{
     description: 'Stock footage and images',
     docUrl: 'https://www.pexels.com/api/new/',
     placeholder: 'Your Pexels API key',
+  },
+  {
+    id: 'openai',
+    name: 'OpenAI',
+    description: 'AI image generation (gpt-image-1)',
+    docUrl: 'https://platform.openai.com/api-keys',
+    placeholder: 'sk-...',
+  },
+  {
+    id: 'replicate',
+    name: 'Replicate',
+    description: 'AI image generation (Flux / SDXL)',
+    docUrl: 'https://replicate.com/account/api-tokens',
+    placeholder: 'r8_...',
   },
   {
     id: 'suno',
@@ -289,6 +335,230 @@ const STATIC_INTEGRATIONS = [
   { id: 'supabase', name: 'Supabase',      description: 'Auth and database' },
 ]
 
+// ─── Browser extension (COMPETITOR_FEATURES_AI_STRATEGY.md 2.9, phase 3) ──────
+//
+// The extension reads impressions and click-through out of YouTube Studio's own
+// analytics view -- the one figure Google's API refuses to serve (HTTP 400 "The
+// query is not supported") -- and posts them here, so a thumbnail change can be
+// judged against the video's own past.
+//
+// The token below authorises that POST. It is scoped to the extension endpoints
+// only, shown exactly once, stored as a hash, and revocable on its own without
+// touching the user's session. That is why it exists instead of reusing the
+// session JWT (which expires hourly) or a refresh token (a full-account
+// credential a browser extension has no business holding).
+
+type ExtensionToken = {
+  id: number
+  label: string | null
+  created_at: string | null
+  last_used_at: string | null
+  revoked_at: string | null
+}
+
+function BrowserExtensionPanel() {
+  const toast = useToast()
+  const [label, setLabel]   = useState('')
+  const [minted, setMinted] = useState('')
+  const [busy, setBusy]     = useState(false)
+  const [tokens, setTokens] = useState<ExtensionToken[]>([])
+  const [linking, setLinking] = useState(false)
+  // null = still checking. Checked once on mount so the panel offers the action that can actually
+  // work, rather than a button that fails for anyone without the extension.
+  const [extInstalled, setExtInstalled] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    pingExtension().then((yes) => { if (alive) setExtInstalled(yes) })
+    return () => { alive = false }
+  }, [])
+
+  const loadTokens = async () => {
+    try {
+      const { data } = await apiClient.get('/api/extension/tokens')
+      setTokens(Array.isArray(data?.tokens) ? data.tokens : [])
+    } catch {
+      // A failed listing is not worth an error toast: it renders as "no active
+      // tokens", and creating one still works.
+      setTokens([])
+    }
+  }
+
+  useEffect(() => { void loadTokens() }, [])
+
+  /**
+   * Mint a token and hand it straight to the extension.
+   *
+   * This is the whole point of the button: a paying customer should never have to move a `vdx_…`
+   * string between two UIs by hand. If the handover fails the token is still shown, because the
+   * manual path below is a real fallback rather than a broken state.
+   */
+  const connect = async () => {
+    setLinking(true)
+    try {
+      const { data } = await apiClient.post('/api/extension/token', {
+        label: 'Connected from the dashboard',
+      })
+      const token = String(data?.token || '')
+      if (!token) throw new Error('no token returned')
+
+      const res = await linkExtension(token)
+      if (res.ok) {
+        setMinted('')
+        toast.success('The extension is connected to this account')
+      } else {
+        setMinted(token)
+        toast.error(linkFailureMessage(res.error))
+      }
+      await loadTokens()
+    } catch (e) {
+      toast.error(apiErrorMessage(e, 'Could not create a token'))
+    } finally {
+      setLinking(false)
+    }
+  }
+
+  const mint = async () => {
+    setBusy(true)
+    try {
+      const { data } = await apiClient.post('/api/extension/token', { label: label.trim() || null })
+      setMinted(String(data?.token || ''))
+      setLabel('')
+      await loadTokens()
+      toast.success('Token created - copy it now')
+    } catch (e) {
+      toast.error(apiErrorMessage(e, 'Could not create a token'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const revoke = async (id: number) => {
+    try {
+      await apiClient.delete(`/api/extension/tokens/${id}`)
+      await loadTokens()
+      toast.success('Token revoked')
+    } catch (e) {
+      toast.error(apiErrorMessage(e, 'Could not revoke that token'))
+    }
+  }
+
+  const live = tokens.filter((t) => !t.revoked_at)
+
+  return (
+    <div className="mt-8">
+      <h2 className="text-[15px] font-semibold text-[#0A0A0A] mb-1">Browser extension</h2>
+      <p className="text-[12px] text-[#525252] mb-4">
+        Create a token, then paste it into the Vidora extension's Options page. It lets the extension
+        save the impressions and click-through figures it reads from your own YouTube Studio view.
+        Revoke it any time — the extension stops working immediately.
+      </p>
+
+      <div className="border border-[#E5E5E5] rounded-lg bg-white p-5">
+        {/* The one-click path. The manual token below still exists, because a browser without the
+            extension installed -- or a build whose id is not configured -- has no other way. */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 pb-4 mb-4 border-b border-[#F5F5F5]">
+          <div className="flex-1">
+            <p className="text-[12px] font-medium text-[#0A0A0A]">
+              {extInstalled === null
+                ? 'Checking for the extension…'
+                : extInstalled
+                  ? 'Extension detected in this browser'
+                  : 'Extension not detected in this browser'}
+            </p>
+            <p className="text-[11px] text-[#A3A3A3] mt-0.5">
+              {extInstalled === true
+                ? 'Connect it and it starts working — no copying or pasting.'
+                : extInstalled === false
+                  ? 'Install the Vidora extension, then reload this page. The token below works either way.'
+                  : 'One moment.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={connect}
+            disabled={linking || extInstalled !== true}
+            className="h-9 px-4 rounded bg-[#0A0A0A] text-white text-[12px] font-medium hover:bg-[#262626] disabled:opacity-40 transition-colors flex items-center justify-center gap-1.5 flex-shrink-0"
+          >
+            {linking ? <Loader2 size={13} strokeWidth={1.5} className="animate-spin" /> : null}
+            Connect the extension
+          </button>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
+          <div className="flex-1">
+            <label htmlFor="ext-label" className="block text-[11px] font-medium text-[#525252] mb-1.5">
+              Label (optional)
+            </label>
+            <input
+              id="ext-label"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="e.g. work laptop"
+              maxLength={120}
+              className="w-full h-9 px-3 rounded border border-[#E5E5E5] text-[13px] text-[#0A0A0A] focus:outline-none focus:border-[#0A0A0A]"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={mint}
+            disabled={busy}
+            className="h-9 px-4 rounded bg-[#0A0A0A] text-white text-[12px] font-medium hover:bg-[#262626] disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5"
+          >
+            {busy ? <Loader2 size={13} strokeWidth={1.5} className="animate-spin" /> : null}
+            Create token
+          </button>
+        </div>
+
+        {minted ? (
+          <div className="mt-4 rounded border border-[#E5E5E5] bg-[#FAFAFA] p-3">
+            <p className="text-[11px] font-medium text-[#0A0A0A] mb-1.5">
+              Copy this now — it cannot be shown again.
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 text-[11px] font-mono text-[#0A0A0A] break-all">{minted}</code>
+              <button
+                type="button"
+                onClick={() => { void navigator.clipboard.writeText(minted); toast.success('Copied') }}
+                className="flex-shrink-0 text-[11px] font-medium h-7 px-2.5 rounded border border-[#0A0A0A] text-[#0A0A0A] hover:bg-[#0A0A0A] hover:text-white transition-colors"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="mt-5">
+          <p className="text-[11px] font-medium text-[#525252] mb-2">
+            {live.length ? `Active tokens (${live.length})` : 'No active tokens'}
+          </p>
+          {tokens.map((t) => (
+            <div key={t.id} className="flex items-center gap-3 py-2 border-t border-[#F5F5F5]">
+              <div className="flex-1 min-w-0">
+                <p className="text-[12px] text-[#0A0A0A] truncate">{t.label || 'Unnamed token'}</p>
+                <p className="text-[11px] text-[#A3A3A3]">
+                  {t.revoked_at
+                    ? 'Revoked'
+                    : t.last_used_at ? `Last used ${t.last_used_at}` : 'Never used'}
+                </p>
+              </div>
+              {!t.revoked_at ? (
+                <button
+                  type="button"
+                  onClick={() => revoke(t.id)}
+                  className="flex-shrink-0 text-[11px] font-medium text-[#B42318] hover:underline"
+                >
+                  Revoke
+                </button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function IntegrationsTab() {
   const { data: channels = [] } = useChannels()
   const youtubeConnected = (channels as any[]).some((ch) => ch.auth_status === 'ok')
@@ -314,39 +584,21 @@ function IntegrationsTab() {
               {int.connected ? 'Connected' : 'Not connected'}
             </span>
             {int.id === 'youtube' && !int.connected && (
-              <a href="#" onClick={(e) => {
-                e.preventDefault()
-                const channelsLink = document.querySelector('a[href="/app/channels"]') as HTMLAnchorElement | null
-                if (channelsLink) channelsLink.click()
-              }} className="text-[11px] font-medium h-7 px-2.5 rounded border border-[#0A0A0A] text-[#0A0A0A] hover:bg-[#0A0A0A] hover:text-white transition-colors flex items-center">
+              <Link to="/app/channels"
+                    className="text-[11px] font-medium h-7 px-2.5 rounded border border-[#0A0A0A] text-[#0A0A0A] hover:bg-[#0A0A0A] hover:text-white transition-colors flex items-center">
                 Manage in Channels →
-              </a>
+              </Link>
             )}
           </div>
         ))}
       </div>
+
+      <BrowserExtensionPanel />
     </div>
   )
 }
 
 // ─── Preferences Tab ──────────────────────────────────────────────────────────
-
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ${
-        checked ? 'bg-[#0A0A0A]' : 'bg-[#D4D4D4]'
-      }`}
-    >
-      <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-        checked ? 'translate-x-4' : 'translate-x-0.5'
-      }`} />
-    </button>
-  )
-}
 
 function PreferencesTab() {
   // This tab's notification toggles duplicate NotificationsTab (which has real
@@ -434,7 +686,7 @@ const SOCIAL_PLATFORMS: SocialPlatformDef[] = [
   {
     id: 'telegram',
     label: 'Telegram',
-    subtitle: 'Channel video posts',
+    subtitle: 'Channel link posts',
     hint: 'https://core.telegram.org/bots#how-do-i-create-a-bot',
     fields: [
       { key: 'bot_token',  label: 'Bot Token', type: 'password', placeholder: '123456:AABBccDDeeFF...' },
@@ -473,12 +725,11 @@ const SOCIAL_PLATFORMS: SocialPlatformDef[] = [
 ]
 
 function SocialPlatformRow({
-  platform, connected, stats, channelSlug, onSave, onRemove,
+  platform, connected, stats, onSave, onRemove,
 }: {
   platform: SocialPlatformDef
   connected: boolean
   stats?: { recent_posts_count?: number; total_views?: number }
-  channelSlug: string
   onSave: (config: Record<string, string>) => Promise<void>
   onRemove: () => Promise<void>
 }) {
@@ -719,7 +970,6 @@ function SocialAccountsTab() {
               platform={platform}
               connected={isConnected(platform.id)}
               stats={getStats(platform.id)}
-              channelSlug={channelSlug}
               onSave={(config) => handleSave(platform.id, config)}
               onRemove={() => handleRemove(platform.id)}
             />
@@ -739,7 +989,6 @@ function SocialAccountsTab() {
 function SchedulerTab() {
   const toast = useToast()
   const queryClient = useQueryClient()
-  const { data: channels = [] } = useChannels()
 
   const { data: statusData, isLoading: statusLoading, refetch } = useQuery({
     queryKey: ['scheduler-status'],
@@ -754,38 +1003,53 @@ function SchedulerTab() {
     staleTime: 30_000,
   })
 
-  // Cadence settings - same underlying store as the Automation tab (.env-backed).
-  const { data: envData, isLoading: cadenceLoading } = useQuery({
-    queryKey: ['automation-settings'],
-    queryFn: () => automationApi.get(),
-    staleTime: 60_000,
+  // This account's own schedule. It used to be the Automation tab's env-backed cadence, which wrote
+  // SCHEDULER_PUBLISH_TIME for the whole deployment (and needed a process restart); the runner now reads
+  // this per-user row, so a tenant can pick their own time and timezone.
+  const { data: scheduleData, isLoading: scheduleLoading } = useQuery({
+    queryKey: ['my-schedule'],
+    queryFn: () => schedulerApi.getSchedule(),
+    staleTime: 30_000,
   })
-  const [publishTime, setPublishTime] = useState('14:00')
-  const [cadenceChannel, setCadenceChannel] = useState('')
-  const [cadenceShortsCount, setCadenceShortsCount] = useState(1)
-  const [cadenceDirty, setCadenceDirty] = useState(false)
+
+  const [schedEnabled, setSchedEnabled] = useState(false)
+  const [schedTimes, setSchedTimes]     = useState<string[]>(['14:00'])
+  const [schedTz, setSchedTz]           = useState(() => {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } catch { return 'UTC' }
+  })
+  const [schedDays, setSchedDays]       = useState<string[]>(['mon','tue','wed','thu','fri','sat','sun'])
+  const [schedPerRun, setSchedPerRun]   = useState(1)
+  const [schedDirty, setSchedDirty]     = useState(false)
 
   React.useEffect(() => {
-    if (envData) {
-      setPublishTime(envData.SCHEDULER_PUBLISH_TIME ?? envData.schedulerPublishTime ?? '14:00')
-      setCadenceChannel(envData.SCHEDULER_CHANNEL ?? envData.schedulerChannel ?? '')
-      const sc = envData.SCHEDULER_SHORTS_COUNT ?? envData.schedulerShortsCount
-      setCadenceShortsCount(sc != null ? Number(sc) : 1)
-    }
-  }, [envData])
+    const cfg = scheduleData?.schedule
+    if (!cfg) return
+    setSchedEnabled(cfg.enabled)
+    setSchedTimes(cfg.times?.length ? cfg.times : [cfg.time || '14:00'])
+    setSchedTz(cfg.timezone || 'UTC')
+    setSchedDays(cfg.days?.length ? cfg.days : ['mon','tue','wed','thu','fri','sat','sun'])
+    setSchedPerRun(cfg.per_run || 1)
+    setSchedDirty(false)
+  }, [scheduleData])
 
-  const saveCadence = useMutation({
-    mutationFn: () => automationApi.save({
-      schedulerPublishTime: publishTime,
-      schedulerChannel: cadenceChannel,
-      schedulerShortsCount: cadenceShortsCount,
+  const saveSchedule = useMutation({
+    mutationFn: () => schedulerApi.saveSchedule({
+      enabled: schedEnabled,
+      time: [...schedTimes].sort()[0] || '14:00',
+      times: [...schedTimes].sort(),
+      timezone: schedTz,
+      days: schedDays,
+      per_run: schedPerRun,
     }),
-    onSuccess: () => {
-      toast.success('Cadence saved - restart the scheduler process to apply')
-      setCadenceDirty(false)
-      queryClient.invalidateQueries({ queryKey: ['automation-settings'] })
+    onSuccess: (res) => {
+      toast.success(res.next_run_at
+        ? `Schedule saved — next run ${new Date(res.next_run_at).toLocaleString()}`
+        : 'Schedule saved — disabled, the queue runs on every tick')
+      setSchedDirty(false)
+      queryClient.invalidateQueries({ queryKey: ['my-schedule'] })
+      queryClient.invalidateQueries({ queryKey: ['scheduler-status'] })
     },
-    onError: () => toast.error('Failed to save cadence'),
+    onError: (err) => toast.error(apiErrorMessage(err, 'Failed to save schedule')),
   })
 
   const runNext = useMutation({
@@ -823,61 +1087,151 @@ function SchedulerTab() {
         Automated queue processing. The scheduler dequeues topics and runs the pipeline on a cadence.
       </p>
 
-      {/* Cadence editor */}
+      {/* This account's publishing schedule */}
       <div className="border border-[#E5E5E5] rounded-md bg-white mb-5 overflow-hidden">
-        <div className="px-5 py-2.5 border-b border-[#E5E5E5] bg-[#FAFAFA]">
-          <p className="text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest">Cadence</p>
+        <div className="px-5 py-2.5 border-b border-[#E5E5E5] bg-[#FAFAFA] flex items-center justify-between">
+          <p className="text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest">My schedule</p>
+          {scheduleData?.next_run_at && schedEnabled && (
+            <p className="text-[11px] text-[#525252]">
+              Next run {new Date(scheduleData.next_run_at).toLocaleString()}
+            </p>
+          )}
         </div>
-        {cadenceLoading ? (
+        {scheduleLoading ? (
           <div className="px-5 py-4"><div className="w-40 h-3 bg-[#F5F5F5] rounded animate-pulse" /></div>
         ) : (
           <div className="px-5 py-4 space-y-3.5">
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={schedEnabled}
+                onChange={(e) => { setSchedEnabled(e.target.checked); setSchedDirty(true) }}
+                className="w-3.5 h-3.5 accent-[#0A0A0A]"
+              />
+              <span className="text-[12px] text-[#0A0A0A]">
+                Run my queue on a schedule
+              </span>
+              <span className="text-[11px] text-[#A3A3A3]">
+                {schedEnabled ? '' : 'off — the queue runs on every scheduler tick'}
+              </span>
+            </label>
+
+            <div>
+              <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">
+                Run times ({schedTz})
+              </label>
+              <div className="flex items-center gap-2 flex-wrap">
+                {schedTimes.map((t, i) => (
+                  <div key={i} className="flex items-center gap-1">
+                    <input
+                      type="time"
+                      value={t}
+                      disabled={!schedEnabled}
+                      onChange={(e) => {
+                        const next = [...schedTimes]
+                        next[i] = e.target.value
+                        setSchedTimes(next)
+                        setSchedDirty(true)
+                      }}
+                      className="h-8 px-3 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors disabled:opacity-40"
+                    />
+                    {schedTimes.length > 1 && (
+                      <button
+                        type="button"
+                        disabled={!schedEnabled}
+                        onClick={() => {
+                          setSchedTimes(schedTimes.filter((_, j) => j !== i))
+                          setSchedDirty(true)
+                        }}
+                        title="Remove this time"
+                        className="w-6 h-6 flex items-center justify-center text-[#A3A3A3] hover:text-red-600 disabled:opacity-40"
+                      >
+                        <X size={11} strokeWidth={1.5} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {schedTimes.length < 6 && (
+                  <button
+                    type="button"
+                    disabled={!schedEnabled}
+                    onClick={() => { setSchedTimes([...schedTimes, '18:00']); setSchedDirty(true) }}
+                    className="h-8 px-2.5 text-[11px] font-medium text-[#525252] border border-dashed border-[#D4D4D4] rounded hover:border-[#0A0A0A] hover:text-[#0A0A0A] disabled:opacity-40"
+                  >
+                    + Add time
+                  </button>
+                )}
+              </div>
+              <p className="text-[10px] text-[#A3A3A3] mt-1">
+                Twice a day? Add a second time. Each time starts {schedPerRun} topic{schedPerRun === 1 ? '' : 's'}.
+              </p>
+            </div>
+
             <div className="flex items-end gap-3 flex-wrap">
               <div>
-                <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Publish time (UTC)</label>
-                <input
-                  type="time"
-                  value={publishTime}
-                  onChange={(e) => { setPublishTime(e.target.value); setCadenceDirty(true) }}
-                  className="h-8 px-3 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Channel</label>
+                <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Timezone</label>
                 <select
-                  value={cadenceChannel}
-                  onChange={(e) => { setCadenceChannel(e.target.value); setCadenceDirty(true) }}
-                  className="h-8 pl-3 pr-8 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
+                  value={schedTz}
+                  disabled={!schedEnabled}
+                  onChange={(e) => { setSchedTz(e.target.value); setSchedDirty(true) }}
+                  className="h-8 pl-3 pr-8 max-w-[220px] text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none disabled:opacity-40"
                 >
-                  <option value="">Default (any pending topic)</option>
-                  {(channels as any[]).map((ch: any) => (
-                    <option key={ch.slug} value={ch.slug}>{ch.name || ch.slug}</option>
-                  ))}
+                  {TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Shorts per run</label>
+                <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Topics per run</label>
                 <select
-                  value={cadenceShortsCount}
-                  onChange={(e) => { setCadenceShortsCount(Number(e.target.value)); setCadenceDirty(true) }}
-                  className="h-8 pl-3 pr-8 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
+                  value={schedPerRun}
+                  disabled={!schedEnabled}
+                  onChange={(e) => { setSchedPerRun(Number(e.target.value)); setSchedDirty(true) }}
+                  className="h-8 pl-3 pr-8 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none disabled:opacity-40"
                 >
-                  {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
+                  {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
                 </select>
               </div>
               <button
-                onClick={() => saveCadence.mutate()}
-                disabled={!cadenceDirty || saveCadence.isPending}
+                onClick={() => saveSchedule.mutate()}
+                disabled={!schedDirty || saveSchedule.isPending}
                 className="h-8 px-4 text-[12px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] disabled:opacity-40 transition-colors flex items-center gap-1.5"
               >
-                {saveCadence.isPending && <Loader2 size={11} strokeWidth={1.5} className="animate-spin" />}
+                {saveSchedule.isPending && <Loader2 size={11} strokeWidth={1.5} className="animate-spin" />}
                 Save
               </button>
             </div>
+
+            <div>
+              <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Days</label>
+              <div className="flex gap-1.5 flex-wrap">
+                {DAY_LABELS.map(({ id, label }) => {
+                  const on = schedDays.includes(id)
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      disabled={!schedEnabled}
+                      onClick={() => {
+                        setSchedDays((days) => on ? days.filter((d) => d !== id) : [...days, id])
+                        setSchedDirty(true)
+                      }}
+                      className={[
+                        'h-7 px-2.5 text-[11px] font-medium rounded border transition-colors disabled:opacity-40',
+                        on
+                          ? 'bg-[#0A0A0A] text-white border-[#0A0A0A]'
+                          : 'bg-white text-[#525252] border-[#E5E5E5] hover:border-[#D4D4D4]',
+                      ].join(' ')}
+                    >
+                      {label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
             <p className="text-[11px] text-[#A3A3A3]">
-              Writes to the server <code className="text-[11px] bg-[#F5F5F5] px-1 rounded">.env</code> file. The standalone{' '}
-              <code className="text-[11px] bg-[#F5F5F5] px-1 rounded">scheduler.py</code> process reads these once at startup —
-              restart it for cadence changes to take effect. "Test Run" and "Run Next" below always use the live value immediately.
+              Your queue starts at {schedTimes.join(', ')} {schedTz}{schedEnabled ? '' : ' when enabled'}, on the days
+              selected. This runs the pipeline from the queue; it does not change anything for other
+              accounts, and no restart is needed.
             </p>
           </div>
         )}
@@ -1029,6 +1383,27 @@ function AutomationTab() {
   const [values, setValues] = useState<Record<string, boolean | string>>({})
   const [dirty, setDirty] = useState(false)
 
+  // Which storage backends can actually work here, from the server. A backend whose SDK is missing is
+  // offered greyed out rather than silently accepted, because it fails on the first upload, not on save.
+  // The server refuses it either way (`storage.set_backend`); this is only so the form cannot look like
+  // it offered something it did not.
+  const availableBackends: string[] = Array.isArray(data?.STORAGE_BACKEND_AVAILABLE)
+    ? (data.STORAGE_BACKEND_AVAILABLE as string[])
+    : ['local', 'r2']
+
+  // The model choices the server's registry can actually back, each with the real model behind the label and
+  // its rate. Read from the server rather than hardcoded here: two labels may resolve to one model (this
+  // product supports two), and a hand-typed list would advertise a model the registry would refuse to price.
+  const modelChoices = Array.isArray(data?.AI_MODEL_CHOICES)
+    ? (data.AI_MODEL_CHOICES as Array<{
+        choice_label: string
+        label: string
+        model: string
+        input_usd_per_mtok: number | null
+        output_usd_per_mtok: number | null
+      }>)
+    : []
+
   // Merge server values into local state when data loads
   React.useEffect(() => {
     if (data) {
@@ -1041,6 +1416,17 @@ function AutomationTab() {
         redditSubreddits:          data.REDDIT_SUBREDDITS ?? data.redditSubreddits ?? '',
         ytVis:                     data.DEFAULT_VISIBILITY ?? data.ytVis ?? 'public',
         shortsMode:                data.SHORTS_MODE ?? data.shortsMode ?? 'separate',
+        openaiImageQuality:        data.OPENAI_IMAGE_QUALITY ?? data.openaiImageQuality ?? 'low',
+        imageGenProvider:          data.IMAGE_GENERATION_PROVIDER ?? data.imageGenProvider ?? 'openai',
+        replicateApiToken:         data.REPLICATE_API_TOKEN ?? data.replicateApiToken ?? '',
+        replicateImageModel:       data.REPLICATE_IMAGE_MODEL ?? data.replicateImageModel ?? 'flux',
+        openaiApiKey:              data.OPENAI_API_KEY ?? data.openaiApiKey ?? '',
+        // The effective backend: the server resolves the database setting over `.env` (storage.py), so
+        // this is what uploads will actually use.
+        storageBackend:            data.STORAGE_BACKEND ?? data.storageBackend ?? 'local',
+        // The effective default model, resolved server-side the same way (core/models.py): a setting
+        // overrides `CLAUDE_MODEL`, so the raw env value would misreport what generations actually use.
+        aiModel:                   data.AI_MODEL ?? data.aiModel ?? '',
       })
     }
   }, [data])
@@ -1142,6 +1528,134 @@ function AutomationTab() {
         )}
       </div>
 
+      {/* Where finished videos are stored. Saved to the database, not .env, so it survives a restart. */}
+      <div className="border border-[#E5E5E5] rounded-md bg-white overflow-hidden mb-5">
+        <div className="px-5 py-2.5 border-b border-[#E5E5E5] bg-[#FAFAFA]">
+          <p className="text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest">Storage</p>
+        </div>
+        <div className="px-5 py-3.5">
+          <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Storage Backend</label>
+          <select
+            value={(values.storageBackend as string) ?? 'local'}
+            onChange={(e) => set('storageBackend', e.target.value)}
+            className="h-8 pl-3 pr-8 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
+          >
+            <option value="local">Local disk (development only)</option>
+            <option value="r2">Cloudflare R2</option>
+            {/* Offered but disabled when the SDK is absent: the backend imports it on the first
+                upload, so choosing it would look like it worked and then fail mid-render. */}
+            <option value="azure" disabled={!availableBackends.includes('azure')}>
+              Azure Blob Storage{availableBackends.includes('azure') ? '' : ' — not installed on this deployment'}
+            </option>
+          </select>
+          <p className="text-[11px] text-[#A3A3A3] mt-1.5">
+            Where new renders and Shorts are uploaded. <strong>Local disk is not usable on a hosted
+            deployment</strong> — the container filesystem is ephemeral, so the files disappear on the
+            next restart. This setting is stored in the database and applies immediately.
+          </p>
+          <p className="text-[11px] text-[#A3A3A3] mt-1">
+            Changing it does not move files that are already uploaded: links recorded earlier were
+            built for the previous backend. Only switch while nothing published depends on them.
+          </p>
+        </div>
+        <div className="px-5 py-3.5 border-t border-[#F0F0F0]">
+          <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Default AI model</label>
+          <select
+            value={(values.aiModel as string) ?? ''}
+            onChange={(e) => set('aiModel', e.target.value)}
+            className="h-8 pl-3 pr-8 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
+          >
+            {/* Empty is a real state, not a placeholder: it means "unset", so the server falls back to
+                `CLAUDE_MODEL` and then to the registry. Offering it avoids a form that silently rewrites a
+                setting nobody chose to change. */}
+            <option value="">Use the environment / registry default</option>
+            {modelChoices.map((c) => (
+              <option key={c.choice_label} value={c.choice_label}>
+                {c.label}
+                {c.input_usd_per_mtok != null ? ` — $${c.input_usd_per_mtok}/M in` : ''}
+              </option>
+            ))}
+          </select>
+          <p className="text-[11px] text-[#A3A3A3] mt-1.5">
+            What every new script and topic list is generated with. Moving it moves <strong>quality and
+            cost together</strong>, which is why it is a setting rather than a constant. Stored in the
+            database and applied to the next generation — the quote and the meter read the same rate.
+          </p>
+          {!!modelChoices.length && new Set(modelChoices.map((c) => c.model)).size < modelChoices.length && (
+            <p className="text-[11px] text-[#A3A3A3] mt-1">
+              Two labels can point at the same model — this deployment supports two models, so there is no
+              third to offer. The model behind each label is shown in the dropdown.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* AI image generation provider */ }
+      <div className="border border-[#E5E5E5] rounded-md bg-white overflow-hidden mb-5">
+        <div className="px-5 py-2.5 border-b border-[#E5E5E5] bg-[#FAFAFA]">
+          <p className="text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest">AI Image Generation</p>
+        </div>
+        <div className="px-5 py-3.5 border-b border-[#F5F5F5]">
+          <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Default Provider</label>
+          <select
+            value={(values.imageGenProvider as string) ?? 'openai'}
+            onChange={(e) => set('imageGenProvider', e.target.value)}
+            className="h-8 pl-3 pr-8 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
+          >
+            <option value="openai">OpenAI gpt-image-1 (paid)</option>
+            <option value="replicate">Replicate Flux/SDXL (paid, cheaper)</option>
+            <option value="pollinations">Pollinations.ai (free)</option>
+          </select>
+          <p className="text-[11px] text-[#A3A3A3] mt-1">Platform-wide default. Per-channel override lives in channel settings.</p>
+        </div>
+        <div className="px-5 py-3.5 border-b border-[#F5F5F5]">
+          <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">OpenAI Quality</label>
+          <select
+            value={(values.openaiImageQuality as string) ?? 'low'}
+            onChange={(e) => set('openaiImageQuality', e.target.value)}
+            className="h-8 pl-3 pr-8 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
+          >
+            <option value="low">Low (~$0.01/image — recommended)</option>
+            <option value="medium">Medium (~$0.04/image)</option>
+            <option value="high">High (~$0.17/image)</option>
+          </select>
+        </div>
+        <div className="px-5 py-3.5 border-b border-[#F5F5F5]">
+          <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">OpenAI API Key</label>
+          <input
+            type="text"
+            value={(values.openaiApiKey as string) ?? ''}
+            onChange={(e) => set('openaiApiKey', e.target.value)}
+            placeholder="sk-********************"
+            className="w-full h-8 px-3 text-[12px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors placeholder:text-[#D4D4D4]"
+          />
+          <p className="text-[11px] text-[#A3A3A3] mt-1">Get it at platform.openai.com/api-keys. Used when provider = openai (and for channel art).</p>
+        </div>
+        <div className="px-5 py-3.5 border-b border-[#F5F5F5]">
+          <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Replicate Model</label>
+          <select
+            value={(values.replicateImageModel as string) ?? 'flux'}
+            onChange={(e) => set('replicateImageModel', e.target.value)}
+            className="h-8 pl-3 pr-8 text-[13px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
+          >
+            <option value="flux">Flux Schnell (fast, ~$0.003-0.01/image)</option>
+            <option value="sdxl">Stable Diffusion XL (~$0.002-0.008/image)</option>
+          </select>
+          <p className="text-[11px] text-[#A3A3A3] mt-1">Only used when provider = replicate.</p>
+        </div>
+        <div className="px-5 py-3.5">
+          <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Replicate API Token</label>
+          <input
+            type="text"
+            value={(values.replicateApiToken as string) ?? ''}
+            onChange={(e) => set('replicateApiToken', e.target.value)}
+            placeholder="r8_********************"
+            className="w-full h-8 px-3 text-[12px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors placeholder:text-[#D4D4D4]"
+          />
+          <p className="text-[11px] text-[#A3A3A3] mt-1">Get it at replicate.com/account/api-tokens. Only used when provider = replicate.</p>
+        </div>
+      </div>
+
       <button
         onClick={() => save.mutate()}
         disabled={!dirty || save.isPending}
@@ -1211,8 +1725,7 @@ function NotificationsTab() {
       const res = await notificationsApi.sendTest()
       toast.success(`Test email sent to ${res.sent_to}`)
     } catch (err: any) {
-      const msg = err?.response?.data?.detail || 'Failed to send test email'
-      toast.error(msg)
+      toast.error(apiErrorMessage(err, 'Failed to send test email'))
     } finally {
       setTesting(false)
     }
@@ -1321,8 +1834,17 @@ function _initials(name: string, email: string): string {
   return src.slice(0, 2).toUpperCase()
 }
 
-const PLAN_LABELS: Record<string, string> = { free: 'Free', pro: 'Pro', enterprise: 'Enterprise', unlimited: 'Unlimited' }
-const PLAN_LIMITS: Record<string, number> = { free: 5, pro: 50, enterprise: 9999, unlimited: 9999 }
+// Must cover every plan id core/metering.PLAN_CREDITS knows about, otherwise a
+// Starter/Studio/Agency customer sees their raw plan id instead of a label.
+const PLAN_LABELS: Record<string, string> = {
+  free: 'Free', starter: 'Starter', pro: 'Pro', studio: 'Studio',
+  agency: 'Agency', enterprise: 'Enterprise', unlimited: 'Unlimited',
+}
+// Credit allowance per plan (0 = unmetered). Videos are no longer the currency.
+const PLAN_CREDITS: Record<string, number> = {
+  free: 40, starter: 300, pro: 900, studio: 2200, agency: 8000,
+  enterprise: 0, unlimited: 0,
+}
 
 function AccountTab() {
   const toast = useToast()
@@ -1344,6 +1866,13 @@ function AccountTab() {
     queryFn: accountApi.getProfile,
   })
   const profile = profileData?.profile
+
+  // Credits are the currency now; the profile's video counter is dead.
+  const { data: creditsUsage } = useQuery({
+    queryKey: ['billing-usage'],
+    queryFn: () => billingApi.usage(),
+    staleTime: 30_000,
+  })
 
   const [displayName, setDisplayName] = useState('')
   useEffect(() => { if (profile) setDisplayName(profile.display_name || '') }, [profile])
@@ -1389,7 +1918,7 @@ function AccountTab() {
       await logout()
       navigate('/login')
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || 'Failed to delete account')
+      toast.error(apiErrorMessage(e, 'Failed to delete account'))
       setDeleting(false)
     }
   }
@@ -1400,9 +1929,13 @@ function AccountTab() {
 
   const email = profile?.email || ''
   const plan  = profile?.plan  || 'free'
-  const used  = profile?.videos_used_this_month || 0
-  const limit = PLAN_LIMITS[plan] ?? 5
-  const usagePct = limit >= 9999 ? 0 : Math.min(100, Math.round(used / limit * 100))
+  // Credits, not videos: `videos_used_this_month` is no longer incremented by
+  // anything, so this bar used to sit at 0 forever.
+  const allowance = PLAN_CREDITS[plan] ?? 40
+  const remaining = creditsUsage?.credits_remaining ?? null
+  const unlimitecredits = allowance === 0
+  const used = remaining != null ? Math.max(0, allowance - remaining) : 0
+  const usagePct = (!unlimitecredits && allowance > 0) ? Math.min(100, Math.round(used / allowance * 100)) : 0
 
   return (
     <div className="max-w-xl space-y-6">
@@ -1452,12 +1985,15 @@ function AccountTab() {
           </div>
         </div>
 
-        {/* Usage bar (only for free/pro) */}
-        {limit < 9999 && (
+        {/* Credit bar (hidden for unmetered plans) */}
+        {!unlimitecredits && (
           <div>
             <div className="flex justify-between text-[11px] text-[#A3A3A3] mb-1.5">
-              <span>Monthly videos</span>
-              <span className="tabular-nums text-[#0A0A0A] font-medium">{used} / {limit}</span>
+              <span>Credits used this period</span>
+              <span className="tabular-nums text-[#0A0A0A] font-medium">
+                {used} / {allowance}
+                {remaining != null && <span className="text-[#A3A3A3] font-normal"> · {remaining} left</span>}
+              </span>
             </div>
             <div className="h-1.5 bg-[#F5F5F5] rounded-full overflow-hidden">
               <div
@@ -1597,7 +2133,13 @@ function VoicesTab() {
   const [selectedGroup, setSelectedGroup] = useState<string>('recommended')
   const [selectedChannel, setSelectedChannel] = useState<string>('')
   const [genderFilter, setGenderFilter] = useState<'all' | 'male' | 'female'>('all')
+  const [voiceSearch, setVoiceSearch] = useState('')
   const [assigning, setAssigning] = useState<string | null>(null)
+  // Voice auditioning. One <audio> for the whole tab: two samples playing over each other is never what
+  // someone wants while comparing voices, and stopping one when another starts is the whole behaviour.
+  const [previewing, setPreviewing] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const previewUrlRef = useRef<string | null>(null)
 
   // ── ElevenLabs state ─────────────────────────────────────────────────────
   const [elVoiceId, setElVoiceId]       = useState('')
@@ -1638,6 +2180,29 @@ function VoicesTab() {
     finally { setSavingEl(false) }
   }
 
+  // Choosing a provider IS the save. Before this, the only Save button lived inside the ElevenLabs panel,
+  // so selecting Edge TTS hid the one control that could persist the choice — and the endpoint it called
+  // only rewrote .env, which the running process had already read.
+  const [savingProvider, setSavingProvider] = useState<string | null>(null)
+  const chooseProvider = async (next: 'edge' | 'elevenlabs') => {
+    setProvider(next)
+    setSavingProvider(next)
+    try {
+      await voiceApi.saveElevenLabsSettings({
+        voice_id: elVoiceId || undefined,
+        stability: elStability,
+        similarity: elSimilarity,
+        style: elStyle,
+        tts_provider: next,
+      })
+      toast.success(`Default voice provider: ${next === 'edge' ? 'Edge TTS' : 'ElevenLabs'}`)
+    } catch {
+      toast.error('Could not save the provider — it will revert on reload')
+    } finally {
+      setSavingProvider(null)
+    }
+  }
+
   const assignVoice = async (voiceId: string) => {
     if (!selectedChannel) { toast.error('Select a channel first'); return }
     setAssigning(voiceId)
@@ -1650,11 +2215,57 @@ function VoicesTab() {
     finally { setAssigning(null) }
   }
 
+  // Audition a voice. The sample is fetched as a blob because the endpoint requires the bearer token,
+  // which an <audio src> cannot send — which is why a plain "test" link could never have worked.
+  const previewVoice = async (voiceId: string) => {
+    if (previewing === voiceId) {
+      audioRef.current?.pause()
+      setPreviewing(null)
+      return
+    }
+    setPreviewing(voiceId)
+    try {
+      const url = await voiceApi.preview(voiceId)
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+      previewUrlRef.current = url
+      const el = audioRef.current ?? new Audio()
+      audioRef.current = el
+      el.onended = () => setPreviewing(null)
+      el.onerror = () => { setPreviewing(null); toast.error('Could not play that sample') }
+      el.src = url
+      await el.play()
+    } catch {
+      setPreviewing(null)
+      toast.error('Preview unavailable — the Edge voice service did not respond')
+    }
+  }
+
+  // Stop the sample and release the blob when the tab unmounts.
+  useEffect(() => () => {
+    audioRef.current?.pause()
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+  }, [])
+
   const groups: VoiceGroup[] = voiceData?.groups ?? []
   const activeGroup = groups.find(g => g.id === selectedGroup)
+
+  // Counts are DERIVED from the API payload, never hard-coded: the Edge blurb
+  // used to advertise "40+ languages · 150+ voices" while the registry had grown
+  // to 77 languages and 312 voices, so the claim silently went stale.
+  const edgeVoiceCount = new Set(groups.flatMap(g => g.voices.map(v => v.id))).size
+  const edgeLanguageCount = new Set(
+    groups
+      .filter(g => g.id !== 'recommended')  // multilingual duplicates of the groups below
+      .flatMap(g => g.voices.map(v => v.lang ?? 'English'))
+  ).size
+
+  const voiceQuery = voiceSearch.trim().toLowerCase()
   const filteredVoices: VoiceEntry[] = (activeGroup?.voices ?? []).filter(v => {
-    if (genderFilter === 'all') return true
-    return v.gender === genderFilter
+    if (genderFilter !== 'all' && v.gender !== genderFilter) return false
+    if (!voiceQuery) return true
+    return `${v.name} ${v.locale ?? ''} ${v.lang ?? ''} ${v.region ?? ''}`
+      .toLowerCase()
+      .includes(voiceQuery)
   })
 
   // ── Assigned voice for current channel ───────────────────────────────────
@@ -1677,20 +2288,28 @@ function VoicesTab() {
           {(['edge', 'elevenlabs'] as const).map(p => (
             <button
               key={p}
-              onClick={() => setProvider(p)}
+              onClick={() => chooseProvider(p)}
+              disabled={savingProvider !== null}
               className={[
-                'flex-1 border rounded-lg p-3.5 text-left transition-colors',
+                'flex-1 border rounded-lg p-3.5 text-left transition-colors relative',
                 provider === p
                   ? 'border-[#0A0A0A] bg-[#0A0A0A] text-white'
                   : 'border-[#E5E5E5] bg-white text-[#525252] hover:border-[#A3A3A3]',
+                savingProvider !== null && savingProvider !== p ? 'opacity-50' : '',
               ].join(' ')}
             >
               <p className={`text-[13px] font-semibold ${provider === p ? 'text-white' : 'text-[#0A0A0A]'}`}>
                 {p === 'edge' ? 'Edge TTS' : 'ElevenLabs'}
               </p>
               <p className={`text-[11px] mt-0.5 ${provider === p ? 'text-white/70' : 'text-[#A3A3A3]'}`}>
-                {p === 'edge' ? 'Free · 40+ languages · 150+ voices' : 'Premium AI · Ultra-realistic · Requires API key'}
+                {p === 'edge'
+                  ? `Free · ${edgeLanguageCount} languages · ${edgeVoiceCount} voices`
+                  : 'Premium AI · Ultra-realistic · Requires API key'}
               </p>
+              {savingProvider === p && (
+                <Loader2 size={12} strokeWidth={1.5}
+                         className={`animate-spin absolute top-3 right-3 ${provider === p ? 'text-white/80' : 'text-[#A3A3A3]'}`} />
+              )}
             </button>
           ))}
         </div>
@@ -1750,12 +2369,37 @@ function VoicesTab() {
 
       {/* ── Edge TTS Voice Browser ───────────────────────────────────────── */}
       <div>
+        {/* The two sections are coupled and nothing said so: assigning an Edge voice does nothing while
+            ElevenLabs is the provider. That is the kind of gap that reads as "my change was ignored". */}
+        {provider !== 'edge' && (
+          <div className="flex items-center gap-3 px-4 py-2.5 mb-3 bg-[#FFFBEB] border border-[#FDE68A] rounded-lg">
+            <p className="text-[12px] text-[#B45309] flex-1">
+              These voices only apply when <strong>Edge TTS</strong> is the provider — you are on ElevenLabs.
+            </p>
+            <button
+              onClick={() => chooseProvider('edge')}
+              disabled={savingProvider !== null}
+              className="h-7 px-3 text-[11px] font-medium bg-white border border-[#FDE68A] text-[#B45309] rounded hover:bg-[#FEF3C7] transition-colors disabled:opacity-40"
+            >
+              Use Edge TTS
+            </button>
+          </div>
+        )}
         <div className="flex items-center justify-between mb-3">
           <div>
             <h2 className="text-[15px] font-semibold text-[#0A0A0A]">Edge TTS Voice Browser</h2>
             <p className="text-[12px] text-[#525252] mt-0.5">Browse and assign voices to channels.</p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Search -- the picker lists 300+ voices, so the tabs alone are slow */}
+            <input
+              type="search"
+              value={voiceSearch}
+              onChange={e => setVoiceSearch(e.target.value)}
+              placeholder="Search voices…"
+              aria-label="Search voices"
+              className="h-7 w-40 px-2 text-[12px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors"
+            />
             {/* Gender filter */}
             <div className="flex border border-[#E5E5E5] rounded overflow-hidden">
               {(['all', 'male', 'female'] as const).map(g => (
@@ -1825,19 +2469,48 @@ function VoicesTab() {
               return (
                 <div
                   key={voice.id}
+                  aria-current={isAssigned ? 'true' : undefined}
                   className={[
-                    'border rounded-lg p-3 flex flex-col gap-2 transition-colors',
-                    isAssigned ? 'border-[#0A0A0A] bg-[#F5F5F5]' : 'border-[#E5E5E5] bg-white hover:border-[#A3A3A3]',
+                    'border rounded-lg p-3 flex flex-col gap-2 transition-all',
+                    // The selected voice is the one fact this grid must communicate at a glance: a ring,
+                    // a tinted surface and a labelled badge, not just a slightly darker border.
+                    isAssigned
+                      ? 'border-[#0A0A0A] bg-[#F5F5F5] ring-2 ring-[#0A0A0A] ring-offset-1'
+                      : 'border-[#E5E5E5] bg-white hover:border-[#A3A3A3]',
                   ].join(' ')}
                 >
                   {/* Name row */}
-                  <div className="flex items-start justify-between gap-1">
-                    <p className="text-[13px] font-medium text-[#0A0A0A] leading-tight">{voice.name}</p>
-                    {voice.gender && (
-                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded flex-shrink-0 mt-0.5 ${
-                        voice.gender === 'female' ? 'bg-[#FDF2F8] text-[#9D174D]' : 'bg-[#EFF6FF] text-[#1E40AF]'
-                      }`}>{voice.gender === 'female' ? '♀' : '♂'}</span>
-                    )}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-[13px] font-medium text-[#0A0A0A] leading-tight">{voice.name}</p>
+                      {isAssigned && (
+                        <span className="mt-1 inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider text-[#16A34A]">
+                          <Check size={9} strokeWidth={2.5} /> Selected
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {voice.gender && (
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                          voice.gender === 'female' ? 'bg-[#FDF2F8] text-[#9D174D]' : 'bg-[#EFF6FF] text-[#1E40AF]'
+                        }`}>{voice.gender === 'female' ? '♀' : '♂'}</span>
+                      )}
+                      <button
+                        onClick={() => previewVoice(voice.id)}
+                        aria-label={previewing === voice.id ? `Stop ${voice.name}` : `Preview ${voice.name}`}
+                        title={previewing === voice.id ? 'Stop' : 'Play a short sample'}
+                        className={[
+                          'h-6 w-6 flex items-center justify-center rounded border transition-colors',
+                          previewing === voice.id
+                            ? 'border-[#0A0A0A] bg-[#0A0A0A] text-white'
+                            : 'border-[#E5E5E5] bg-white text-[#525252] hover:border-[#0A0A0A] hover:text-[#0A0A0A]',
+                        ].join(' ')}
+                      >
+                        {previewing === voice.id
+                          ? <Square size={8} strokeWidth={2.5} fill="currentColor" />
+                          : <Play size={9} strokeWidth={2} fill="currentColor" />}
+                      </button>
+                    </div>
                   </div>
 
                   {/* Meta */}
@@ -1908,7 +2581,19 @@ function VoicesTab() {
 // ─── Settings Page ────────────────────────────────────────────────────────────
 
 export default function Settings() {
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin'
+  // Scheduler and Automation write the deployment's .env; a tenant must not see a control that changes
+  // everyone's configuration (and that cannot even read back their own values).
+  const visibleTabs = TABS.filter((t) => isAdmin || !PLATFORM_TABS.includes(t.id))
+
   const [activeTab, setActiveTab] = useState<Tab>('api-keys')
+
+  // If the role changes under us (logout of an admin, impersonation) and the open tab is now hidden,
+  // fall back instead of leaving the panel mounted with no tab selected.
+  useEffect(() => {
+    if (!visibleTabs.some((t) => t.id === activeTab)) setActiveTab('api-keys')
+  }, [isAdmin, activeTab])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const content: Record<Tab, React.ReactNode> = {
     'api-keys':      <APIKeysTab />,
@@ -1931,7 +2616,7 @@ export default function Settings() {
 
       {/* Underline tab bar */}
       <div role="tablist" aria-label="Settings sections" className="flex border-b border-[#E5E5E5] mb-6">
-        {TABS.map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab.id}
             role="tab"
@@ -1950,7 +2635,7 @@ export default function Settings() {
         ))}
       </div>
 
-      {content[activeTab]}
+      {isAdmin || !PLATFORM_TABS.includes(activeTab) ? content[activeTab] : null}
     </div>
   )
 }

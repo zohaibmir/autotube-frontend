@@ -2,11 +2,12 @@ import React, { useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Activity, Brain, RefreshCw, Key, Clock, Layers,
+  Activity, Brain, RefreshCw, Key, Layers,
   DollarSign, CheckCircle2, XCircle, AlertCircle, Zap,
   BarChart2, ArrowRight, ChevronDown, ChevronUp,
 } from 'lucide-react'
-import { analyticsApi, schedulerApi, byokApi } from '@api/services'
+import { analyticsApi, schedulerApi, byokApi, adminApi } from '@api/services'
+import type { InsightCard } from '@api/services'
 import { useChannels } from '@hooks/useJobs'
 import { useAuthStore } from '@store/auth'
 
@@ -31,11 +32,6 @@ const fmtRelative = (iso: string | undefined) => {
   const h = Math.floor(m / 60)
   if (h < 24)  return `${h}h ago`
   return `${Math.floor(h / 24)}d ago`
-}
-
-const fmtDate = (iso: string | undefined) => {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 // ─── Health card ──────────────────────────────────────────────────────────────
@@ -111,7 +107,24 @@ function DigestSection({ channelSlug }: { channelSlug: string }) {
     retry: 1,
   })
 
-  const digest = data?.digest ?? data?.summary ?? data
+  // R1: same contract as AnalyticsPage. There is no `digest` string on this payload and never was, so
+  // `data?.digest ?? data?.summary ?? data` fell through to the whole object, matched neither `.text` nor
+  // `.content`, and rendered "No digest available yet" for every channel — including synced ones.
+  const digestStatus   = data?.status ?? 'ok'
+  const digestPatterns = data?.top_patterns ?? []
+  const digestActions  = data?.action_items ?? []
+
+  // Render the payload the API actually returns, rather than guessing at a `digest` string.
+  const digestLines: string[] = []
+  if (digestStatus === 'ok') {
+    if (data?.subject) digestLines.push(`# ${data.subject}${data.period ? ` — ${data.period}` : ''}`)
+    if (data?.insights) digestLines.push(data.insights)
+    for (const p of digestPatterns) {
+      const suffix = [p.metric, p.effect ? `(${p.effect})` : ''].filter(Boolean).join(' ')
+      digestLines.push(`• ${p.name || 'Pattern'}${suffix ? ` — ${suffix}` : ''}`)
+    }
+    for (const a of digestActions) digestLines.push(`• ${a}`)
+  }
 
   return (
     <div className="bg-white border border-[#E5E5E5] rounded-lg p-5">
@@ -139,13 +152,28 @@ function DigestSection({ channelSlug }: { channelSlug: string }) {
           <Skeleton className="h-3 w-3/4" />
         </div>
       ) : isError ? (
-        <div className="flex items-center gap-2 text-[12px] text-[#A3A3A3] py-4">
+        <div className="flex items-center gap-2 text-[12px] text-[#B45309] py-4">
           <AlertCircle size={13} strokeWidth={1.5} />
-          Digest unavailable - YouTube Analytics sync may be needed.
+          Could not reach the digest service. That is a request failure, not an empty digest.
         </div>
-      ) : typeof digest === 'string' ? (
+      ) : digestStatus === 'error' ? (
+        <div className="flex items-center gap-2 text-[12px] text-[#B45309] py-4">
+          <AlertCircle size={13} strokeWidth={1.5} />
+          {data?.error || 'Digest generation failed.'}
+        </div>
+      ) : digestStatus === 'insufficient_data' ? (
+        <div className="flex items-center gap-2 text-[12px] text-[#525252] py-4">
+          <BarChart2 size={13} strokeWidth={1.5} />
+          {data?.message || 'Not enough performance data yet — at least three videos with synced analytics are needed.'}
+        </div>
+      ) : (
         <div className="prose-sm">
-          {digest.split('\n').filter(Boolean).map((line: string, i: number) => {
+          {digestLines.length === 0 ? (
+            <div className="flex items-center gap-2 text-[12px] text-[#A3A3A3] py-4">
+              <BarChart2 size={13} strokeWidth={1.5} />
+              No digest content in this period. That is a result, not a failure.
+            </div>
+          ) : digestLines.map((line: string, i: number) => {
             const isBullet  = line.trimStart().startsWith('•') || line.trimStart().startsWith('-') || line.trimStart().startsWith('*')
             const isHeading = /^#{1,3}\s/.test(line) || (/^[A-Z]/.test(line) && line.endsWith(':'))
             if (isHeading) {
@@ -160,7 +188,7 @@ function DigestSection({ channelSlug }: { channelSlug: string }) {
                 <div key={i} className="flex items-start gap-1.5 mb-1">
                   <span className="text-[#D4D4D4] mt-1 flex-shrink-0">•</span>
                   <span className="text-[13px] text-[#525252] leading-relaxed">
-                    {line.replace(/^[\•\-\*]\s*/, '')}
+                    {line.replace(/^[•\-*]\s*/, '')}
                   </span>
                 </div>
               )
@@ -171,15 +199,6 @@ function DigestSection({ channelSlug }: { channelSlug: string }) {
               </p>
             )
           })}
-        </div>
-      ) : digest?.text || digest?.content ? (
-        <p className="text-[13px] text-[#525252] leading-relaxed whitespace-pre-wrap">
-          {digest.text ?? digest.content}
-        </p>
-      ) : (
-        <div className="flex items-center gap-2 text-[12px] text-[#A3A3A3] py-4">
-          <BarChart2 size={13} strokeWidth={1.5} />
-          No digest available yet. Sync YouTube Analytics to generate insights.
         </div>
       )}
     </div>
@@ -198,13 +217,11 @@ function InsightsSection({ channelSlug }: { channelSlug: string }) {
     retry: 1,
   })
 
-  const insights: any[] = Array.isArray(data?.insights)
-    ? data.insights
-    : Array.isArray(data)
-      ? data
-      : data?.insight
-        ? [{ text: data.insight }]
-        : []
+  // R1: `insights` is always an array of cards on this payload. The old fallbacks — `Array.isArray(data)`
+  // and `data.insight` — coped with shapes this endpoint has never returned, and the render below then
+  // read `item.text`, which the card does not have, so every card printed as raw JSON.
+  const insights: InsightCard[] = data?.insights ?? []
+  const insightsStatus = data?.status ?? 'ok'
 
   const visible = expanded ? insights : insights.slice(0, 3)
 
@@ -238,27 +255,49 @@ function InsightsSection({ channelSlug }: { channelSlug: string }) {
             </div>
           ))}
         </div>
-      ) : isError || insights.length === 0 ? (
+      ) : isError ? (
+        <div className="flex items-center gap-2 text-[12px] text-[#B45309] py-4">
+          <AlertCircle size={13} strokeWidth={1.5} />
+          Could not reach the insights service. That is a request failure, not missing data.
+        </div>
+      ) : insightsStatus === 'error' ? (
+        <div className="flex items-center gap-2 text-[12px] text-[#B45309] py-4">
+          <AlertCircle size={13} strokeWidth={1.5} />
+          {data?.error || 'Insight generation failed.'}
+        </div>
+      ) : insightsStatus === 'insufficient_data' ? (
+        <div className="flex items-center gap-2 text-[12px] text-[#525252] py-4">
+          <BarChart2 size={13} strokeWidth={1.5} />
+          {data?.message || 'Not enough performance data yet — at least three videos with synced analytics are needed.'}
+        </div>
+      ) : insights.length === 0 ? (
         <div className="flex items-center gap-2 text-[12px] text-[#A3A3A3] py-4">
           <AlertCircle size={13} strokeWidth={1.5} />
-          {isError ? 'Insights unavailable - sync YouTube Analytics to enable.' : 'No insights yet. Sync to generate AI analysis.'}
+          No patterns stood out in this period. That is a result, not a failure.
         </div>
       ) : (
         <div className="space-y-3">
-          {visible.map((item: any, i: number) => {
-            const text = typeof item === 'string' ? item : item.text ?? item.insight ?? item.content ?? JSON.stringify(item)
-            const priority = item.priority ?? item.severity ?? 'info'
-            const dotColor = priority === 'high' ? '#DC2626' : priority === 'medium' ? '#D97706' : '#A3A3A3'
-            return (
-              <div key={i} className="flex items-start gap-2.5">
-                <span
-                  className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5"
-                  style={{ background: dotColor }}
-                />
-                <p className="text-[13px] text-[#525252] leading-relaxed">{text}</p>
+          {visible.map((card, i) => (
+            <div key={i} className="flex items-start gap-2.5">
+              <span
+                className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5"
+                style={{ background: typeof card.confidence === 'number' && card.confidence >= 0.7 ? '#DC2626' : '#A3A3A3' }}
+              />
+              <div className="flex-1">
+                <p className="text-[13px] text-[#0A0A0A] leading-relaxed">
+                  {card.icon ? `${card.icon} ` : ''}{card.title}
+                </p>
+                {(card.metric || card.effect) && (
+                  <p className="text-[12px] text-[#525252]">
+                    {card.metric}{card.metric && card.effect ? ' · ' : ''}{card.effect}
+                  </p>
+                )}
+                {typeof card.confidence === 'number' && (
+                  <p className="text-[11px] text-[#A3A3A3]">{Math.round(card.confidence * 100)}% confidence</p>
+                )}
               </div>
-            )
-          })}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -416,11 +455,150 @@ function SyncSection({ channelSlug }: { channelSlug: string }) {
   )
 }
 
+// ─── Margin section (W9) ──────────────────────────────────────────────────────
+
+function MarginSection({
+  data,
+  isLoading,
+}: {
+  data?: Awaited<ReturnType<typeof adminApi.margin>>
+  isLoading: boolean
+}) {
+  if (isLoading) {
+    return (
+      <div className="border border-[#E5E5E5] rounded-lg p-5 mb-6">
+        <p className="text-[12px] text-[#A3A3A3]">Loading margin…</p>
+      </div>
+    )
+  }
+  if (!data?.ok) return null
+
+  const t = data.totals
+  const marginState = t.margin_pct === null ? 'neutral'
+    : t.margin_pct >= 50 ? 'ok' : t.margin_pct >= 20 ? 'warn' : 'error'
+
+  return (
+    <div className="border border-[#E5E5E5] rounded-lg mb-6">
+      <div className="px-4 py-3 border-b border-[#E5E5E5] flex items-center justify-between">
+        <div>
+          <p className="text-[13px] font-semibold text-[#0A0A0A]">Gross margin by customer</p>
+          <p className="text-[11px] text-[#A3A3A3] mt-0.5">
+            Last {data.days} days · cost is our provider exposure (BYOK spend is the customer's)
+          </p>
+        </div>
+        {t.custom_priced_users > 0 && (
+          <span className="text-[10px] text-[#A3A3A3]">
+            {t.custom_priced_users} custom-priced user{t.custom_priced_users !== 1 ? 's' : ''} excluded from margin
+          </span>
+        )}
+      </div>
+
+      {/* Headline numbers */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-[#F5F5F5] border-b border-[#E5E5E5]">
+        {[
+          { label: 'Revenue', value: fmtUSD(t.revenue_usd), sub: `${t.paying_users} paying of ${t.users}` },
+          { label: 'Provider cost', value: fmtUSD(t.cost_usd), sub: 'all users incl. free' },
+          { label: 'Gross margin', value: t.margin_pct === null ? '—' : `${t.margin_pct.toFixed(1)}%`,
+            sub: t.margin_pct === null ? 'no paying customers yet' : 'priced accounts only',
+            state: marginState },
+          { label: 'Throttle trigger', value: `${(data.throttle_ratio * 100).toFixed(0)}%`,
+            sub: 'cost vs plan revenue' },
+        ].map((c) => (
+          <div key={c.label} className="px-4 py-3">
+            <p className="text-[10px] uppercase tracking-widest text-[#A3A3A3] font-medium">{c.label}</p>
+            <p className={`text-[16px] font-semibold mt-0.5 ${
+              c.state === 'error' ? 'text-[#DC2626]'
+              : c.state === 'warn' ? 'text-[#B45309]' : 'text-[#0A0A0A]'
+            }`}>{c.value}</p>
+            <p className="text-[10px] text-[#A3A3A3] mt-0.5">{c.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* By plan */}
+      <div className="px-4 py-3 border-b border-[#E5E5E5]">
+        <p className="text-[11px] font-medium text-[#525252] uppercase tracking-wide mb-2">By plan</p>
+        <div className="space-y-1">
+          {data.by_plan.map((p) => (
+            <div key={p.plan} className="flex items-center justify-between text-[12px] py-1">
+              <span className="text-[#0A0A0A] capitalize w-24">{p.plan}</span>
+              <span className="text-[#A3A3A3] w-16">{p.users} user{p.users !== 1 ? 's' : ''}</span>
+              <span className="text-[#525252] w-20">{fmtUSD(p.revenue_usd)} rev</span>
+              <span className="text-[#525252] w-20">{fmtUSD(p.cost_usd)} cost</span>
+              <span className={`w-16 text-right ${
+                p.margin_pct === null ? 'text-[#A3A3A3]'
+                : p.margin_pct < 20 ? 'text-[#DC2626]' : 'text-[#16A34A]'
+              }`}>
+                {p.margin_pct === null ? (p.custom_pricing ? 'custom' : '—') : `${p.margin_pct.toFixed(1)}%`}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Top spenders */}
+      <div className="px-4 py-3">
+        <p className="text-[11px] font-medium text-[#525252] uppercase tracking-wide mb-2">
+          Top spenders
+        </p>
+        {data.top_spenders.length === 0 || data.top_spenders.every((u) => u.cost_usd === 0) ? (
+          <p className="text-[12px] text-[#A3A3A3]">
+            No provider spend recorded yet. This fills in once real renders run through the meter.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[12px]">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-widest text-[#A3A3A3]">
+                  <th className="text-left font-medium pb-1.5">Customer</th>
+                  <th className="text-left font-medium pb-1.5">Plan</th>
+                  <th className="text-right font-medium pb-1.5">Cost</th>
+                  <th className="text-right font-medium pb-1.5">Margin</th>
+                  <th className="text-right font-medium pb-1.5">Credits</th>
+                  <th className="text-left font-medium pb-1.5 pl-3">Top provider</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#F5F5F5]">
+                {data.top_spenders.map((u) => (
+                  <tr key={u.user_id}>
+                    <td className="py-1.5 text-[#525252] truncate max-w-[180px]">
+                      {u.email ?? u.user_id.slice(0, 8)}
+                      {u.throttled && (
+                        <span className="ml-2 text-[9px] font-bold uppercase tracking-widest bg-[#FEF2F2] text-[#DC2626] px-1.5 py-0.5 rounded">
+                          Throttled
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-1.5 text-[#A3A3A3] capitalize">{u.plan}</td>
+                    <td className="py-1.5 text-right text-[#0A0A0A]">{fmtUSD(u.cost_usd)}</td>
+                    <td className={`py-1.5 text-right ${
+                      u.margin_pct === null ? 'text-[#A3A3A3]'
+                      : u.margin_pct < 20 ? 'text-[#DC2626]' : 'text-[#16A34A]'
+                    }`}>
+                      {u.margin_pct === null ? '—' : `${u.margin_pct.toFixed(1)}%`}
+                    </td>
+                    <td className="py-1.5 text-right text-[#A3A3A3]">
+                      {u.credits_remaining ?? '—'}
+                    </td>
+                    <td className="py-1.5 pl-3 text-[#525252]">{u.top_provider ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Admin Page ───────────────────────────────────────────────────────────────
 
 export default function AdminPage() {
   const { user } = useAuthStore()
-  const { data: channels = [] } = useChannels()
+  // The job filter spans every account, so it asks for the deployment-wide channel list explicitly --
+  // this is the one place that legitimately wants it.
+  const { data: channels = [] } = useChannels(true)
   const [channelSlug, setChannelSlug] = useState('')
 
   // System health queries
@@ -439,6 +617,14 @@ export default function AdminPage() {
   const costsQuery = useQuery({
     queryKey: ['admin-costs'],
     queryFn:  analyticsApi.costs,
+    staleTime: 5 * 60_000,
+  })
+
+  // W9: per-user margin. Cross-user, so the endpoint is require_admin-gated
+  // server-side -- the client gate below is only a convenience.
+  const marginQuery = useQuery({
+    queryKey: ['admin-margin'],
+    queryFn:  () => adminApi.margin(30),
     staleTime: 5 * 60_000,
   })
 
@@ -463,14 +649,18 @@ export default function AdminPage() {
     byokQuery.refetch()
     schedulerQuery.refetch()
     costsQuery.refetch()
+    marginQuery.refetch()
   }
 
   // Client-side gate - the nav link is already hidden for non-admins, this
   // blocks direct URL navigation too. Placed after all hooks (Rules of
   // Hooks) so the guard doesn't change hook-call order across renders.
-  // The backend endpoints this page calls are intentionally shared with
-  // regular per-channel Analytics/Settings pages (see TEST.md §25), so this
-  // is a UI-level guard, not a data-layer fix.
+  // The backend endpoints this page calls are shared with the regular per-channel Analytics/Settings
+  // pages, so this is a UI-level guard -- but it is no longer the *only* guard. TEST.md §29.22/§29.23
+  // scoped those endpoints: `resolve_owned_channel()` returns a channel the caller owns or refuses,
+  // and never `None` (which is what used to widen a query to every channel on the deployment). So a
+  // customer who reaches one of them directly gets their own channel's data or a 404, not the
+  // platform's. This redirect is the courtesy on top of that.
   const isAdmin = user?.role === 'admin' || user?.role === 'super_admin'
   if (user && !isAdmin) return <Navigate to="/app" replace />
 
@@ -492,7 +682,7 @@ export default function AdminPage() {
               <option value="">All channels</option>
               {channels.map((ch: any) => (
                 <option key={ch.slug} value={ch.slug}>
-                  {ch.name ?? ch.slug}
+                  {ch.name ?? ch.slug}{ch.is_mine === false && ch.owner_email ? ` — ${ch.owner_email}` : ''}
                 </option>
               ))}
             </select>
@@ -550,6 +740,9 @@ export default function AdminPage() {
           linkPath="/app/analytics"
         />
       </div>
+
+      {/* ── Gross margin (W9) ─────────────────────────────────────────── */}
+      <MarginSection data={marginQuery.data} isLoading={marginQuery.isLoading} />
 
       {/* ── AI Intelligence ───────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">

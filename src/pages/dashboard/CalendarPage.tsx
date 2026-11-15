@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import React, { useState, useRef, useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ChevronLeft, ChevronRight, X, ExternalLink, Plus,
   Calendar, Loader2, Check,
@@ -15,6 +15,8 @@ interface CalendarEvent {
   title: string
   status: string
   scheduled_date?: string
+  // The instant the queue item becomes runnable. `scheduled_date` is kept for the day grid.
+  scheduled_at?: string
   published_date?: string
   youtube_id?: string
   channel_slug?: string
@@ -31,7 +33,32 @@ const MONTHS = [
 ]
 
 function fmt(date: Date): string {
-  return date.toISOString().slice(0, 10)
+  // Local components, not toISOString(): at midnight in UTC+10 the ISO string is the *previous* day, so
+  // an entire grid row landed one cell to the left for customers east of Greenwich.
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+function localInputValue(value?: string | null): string {
+  // "datetime-local" needs `YYYY-MM-DDTHH:MM` in the *viewer's* zone.
+  if (!value) return ''
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? new Date(`${value}T12:00:00`)
+    : new Date(value)
+  if (Number.isNaN(parsed.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`
+    + `T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`
+}
+
+function dayKeyOf(value?: string | null): string {
+  // A bare date is already a day key; an instant is grouped by the day it falls on *locally*.
+  if (!value) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value.slice(0, 10) : fmt(parsed)
 }
 
 function buildGrid(year: number, month: number): Date[][] {
@@ -82,10 +109,13 @@ function EventPill({
   isActive: boolean
 }) {
   const isPublished = event.source === 'video'
+  const time = !isPublished && event.scheduled_at
+    ? new Date(event.scheduled_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : ''
   return (
     <button
       onClick={onClick}
-      title={event.title}
+      title={`${event.title}${time ? ` — ${time}` : ''}`}
       className={[
         'w-full text-left truncate rounded px-1.5 py-0.5 text-[10px] font-medium border transition-colors mb-0.5 leading-tight',
         isActive
@@ -95,6 +125,7 @@ function EventPill({
           : 'bg-[#F5F5F5] text-[#525252] border-[#E5E5E5] hover:bg-[#EFEFEF]',
       ].join(' ')}
     >
+      {time && <span className="opacity-60 mr-1">{time}</span>}
       {event.title}
     </button>
   )
@@ -113,9 +144,10 @@ function DetailPanel({
   onReschedule: (queueId: number, date: string | null) => void
   rescheduling: boolean
 }) {
-  const [newDate, setNewDate] = useState(event.scheduled_date ?? '')
+  const [newWhen, setNewWhen] = useState(() =>
+    localInputValue(event.scheduled_at ?? event.scheduled_date))
   const isPublished = event.source === 'video'
-  const date = event.published_date ?? event.scheduled_date ?? ''
+  const date = event.published_date ?? event.scheduled_at ?? event.scheduled_date ?? ''
 
   return (
     <aside className="w-[260px] flex-shrink-0 bg-white border-l border-[#E5E5E5] flex flex-col">
@@ -154,7 +186,13 @@ function DetailPanel({
               <span className="text-[11px] text-[#A3A3A3] w-16">
                 {isPublished ? 'Published' : 'Scheduled'}
               </span>
-              <span className="text-[12px] text-[#525252]">{date}</span>
+              <span className="text-[12px] text-[#525252]">
+                {isPublished
+                  ? date
+                  : (event.scheduled_at
+                      ? new Date(event.scheduled_at).toLocaleString()
+                      : date)}
+              </span>
             </div>
           )}
           <div className="flex items-center gap-2">
@@ -187,14 +225,19 @@ function DetailPanel({
           <div className="space-y-2">
             <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-wide">Reschedule</p>
             <input
-              type="date"
-              value={newDate}
-              onChange={e => setNewDate(e.target.value)}
+              type="datetime-local"
+              value={newWhen}
+              onChange={e => setNewWhen(e.target.value)}
               className="w-full h-8 px-2 text-[12px] text-[#0A0A0A] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors"
             />
+            <p className="text-[10px] text-[#A3A3A3]">
+              The queue runs it at this time in your local zone, once your scheduler slot is reached.
+            </p>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => event.queue_id && onReschedule(event.queue_id, newDate || null)}
+                onClick={() => event.queue_id && onReschedule(
+                  event.queue_id,
+                  newWhen ? new Date(newWhen).toISOString() : null)}
                 disabled={rescheduling}
                 className="flex items-center gap-1.5 h-7 px-3 bg-[#0A0A0A] text-white text-[11px] font-medium rounded hover:bg-[#262626] disabled:opacity-40 transition-colors"
               >
@@ -222,13 +265,11 @@ function DetailPanel({
 // ── Quick Add Form ─────────────────────────────────────────────────────────────
 
 function QuickAddForm({
-  date,
   channels,
   onSubmit,
   onCancel,
   loading,
 }: {
-  date: string
   channels: any[]
   onSubmit: (topic: string, channelSlug: string) => void
   onCancel: () => void
@@ -321,7 +362,7 @@ export default function CalendarPage() {
 
   const { data: channelsData } = useQuery({
     queryKey: ['channels'],
-    queryFn: channelsApi.list,
+    queryFn: () => channelsApi.list(),
   })
 
   const channels: any[] = channelsData ?? []
@@ -330,9 +371,8 @@ export default function CalendarPage() {
   // Build a map: dateStr → CalendarEvent[]
   const eventMap = new Map<string, CalendarEvent[]>()
   for (const ev of allEvents) {
-    const key = ev.scheduled_date ?? ev.published_date ?? ''
-    if (!key) continue
-    const d = key.slice(0, 10) // normalize to YYYY-MM-DD
+    const d = dayKeyOf(ev.scheduled_at ?? ev.scheduled_date ?? ev.published_date)
+    if (!d) continue
     if (!eventMap.has(d)) eventMap.set(d, [])
     eventMap.get(d)!.push(ev)
   }
@@ -563,7 +603,6 @@ export default function CalendarPage() {
                           {/* Quick-add form */}
                           {isAdding && (
                             <QuickAddForm
-                              date={dayStr}
                               channels={channels}
                               onSubmit={handleQuickAdd}
                               onCancel={() => setAddingToDay(null)}

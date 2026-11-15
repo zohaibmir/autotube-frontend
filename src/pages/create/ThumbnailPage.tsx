@@ -1,43 +1,170 @@
-import React, { useState, useRef, useCallback } from 'react'
+import React, { useState, useRef, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ImageIcon, ChevronRight, Wand2, Camera, Upload,
-  Loader2, CheckCircle, Youtube, Copy, RefreshCw, ToggleLeft, ToggleRight,
+  Loader2, CheckCircle, Youtube, RefreshCw, ToggleLeft, ToggleRight,
 } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { useCreateStore } from '@store/create'
 import { thumbnailApi, youtubeApi } from '@api/services'
+import {
+  DEFAULT_OVERLAY_STYLE, OVERLAY_COLORS, OVERLAY_FONTS, composeThumbnail,
+  type OverlayStyle,
+} from '@lib/thumbnailOverlay'
 import { useToast } from '@components/Toast'
+import { apiErrorMessage } from '@lib/apiError'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type BgMode = 'ai' | 'pexels' | 'upload'
 
-// ─── Title overlay helper ─────────────────────────────────────────────────────
+const INPUT_CLS =
+  'h-8 px-2 text-[12px] border border-[#E5E5E5] rounded bg-[#FAFAFA] focus:outline-none focus:border-[#A3A3A3]'
 
-function ThumbnailPreview({
-  dataUrl,
-  title,
-  showOverlay,
-}: {
-  dataUrl: string | null
-  title: string
-  showOverlay: boolean
-}) {
+function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="relative w-full aspect-video bg-[#F5F5F5] border border-[#E5E5E5] rounded-lg overflow-hidden">
-      {dataUrl ? (
-        <img src={dataUrl} alt="Thumbnail preview" className="w-full h-full object-cover" />
-      ) : (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <ImageIcon size={40} strokeWidth={1} className="text-[#D4D4D4]" />
+    <p className="text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1">{children}</p>
+  )
+}
+
+function ToggleChip({
+  active, onClick, label,
+}: { active: boolean; onClick: () => void; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className={`h-7 px-3 text-[11px] font-medium rounded border transition-colors ${
+        active
+          ? 'bg-[#0A0A0A] text-white border-[#0A0A0A]'
+          : 'bg-white text-[#525252] border-[#E5E5E5] hover:bg-[#FAFAFA]'
+      }`}
+    >
+      {label}
+    </button>
+  )
+}
+
+// ─── Overlay controls ─────────────────────────────────────────────────────────
+//
+// These were impossible before: the overlay was a DOM element drawn over the preview and never
+// composited into the image, so there was nothing for a font or a colour to apply to. The values
+// here feed `composeThumbnail`, whose output *is* the preview and *is* what gets uploaded.
+
+function OverlayControls({
+  style, onChange, disabled,
+}: { style: OverlayStyle; onChange: (patch: Partial<OverlayStyle>) => void; disabled: boolean }) {
+  return (
+    <div className={`space-y-4 ${disabled ? 'opacity-50 pointer-events-none' : ''}`}>
+      <div>
+        <FieldLabel>Overlay text</FieldLabel>
+        <input
+          value={style.text}
+          aria-label="Overlay text"
+          onChange={(e) => onChange({ text: e.target.value })}
+          placeholder="Short and punchy - this is read at a glance"
+          className={`w-full ${INPUT_CLS}`}
+        />
+        <p className="text-[10px] text-[#A3A3A3] mt-1">
+          Up to three lines; text that does not fit is trimmed.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <FieldLabel>Font</FieldLabel>
+          <select
+            aria-label="Font family"
+            value={style.fontKey}
+            onChange={(e) => onChange({ fontKey: e.target.value as OverlayStyle['fontKey'] })}
+            className={`w-full ${INPUT_CLS}`}
+          >
+            {OVERLAY_FONTS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
+          </select>
         </div>
-      )}
-      {showOverlay && title && (
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-4 py-5">
-          <p className="text-white text-[13px] font-semibold leading-tight line-clamp-2">{title}</p>
+        <div>
+          <FieldLabel>Position</FieldLabel>
+          <select
+            aria-label="Text position"
+            value={style.position}
+            onChange={(e) => onChange({ position: e.target.value as OverlayStyle['position'] })}
+            className={`w-full ${INPUT_CLS}`}
+          >
+            <option value="top">Top</option>
+            <option value="middle">Middle</option>
+            <option value="bottom">Bottom</option>
+          </select>
         </div>
-      )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <FieldLabel>Size - {Math.round(style.fontSize)}px</FieldLabel>
+          <input
+            type="range" min={40} max={180} step={2} value={style.fontSize} aria-label="Font size"
+            onChange={(e) => onChange({ fontSize: Number(e.target.value) })}
+            className="w-full"
+          />
+        </div>
+        <div>
+          <FieldLabel>Outline - {style.strokeWidth}px</FieldLabel>
+          <input
+            type="range" min={0} max={18} step={1} value={style.strokeWidth} aria-label="Outline width"
+            onChange={(e) => onChange({ strokeWidth: Number(e.target.value) })}
+            className="w-full"
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <FieldLabel>Text colour</FieldLabel>
+          <div className="flex items-center gap-2 flex-wrap">
+            {OVERLAY_COLORS.map((c) => (
+              <button
+                key={c}
+                aria-label={`Text colour ${c}`}
+                onClick={() => onChange({ color: c })}
+                style={{ background: c }}
+                className={`w-6 h-6 rounded-full border transition-shadow ${
+                  style.color.toLowerCase() === c.toLowerCase()
+                    ? 'ring-2 ring-[#0A0A0A] ring-offset-1 border-[#0A0A0A]'
+                    : 'border-[#E5E5E5]'
+                }`}
+              />
+            ))}
+            <input
+              type="color" value={style.color} aria-label="Custom text colour"
+              onChange={(e) => onChange({ color: e.target.value })}
+              className="w-8 h-6 p-0 border border-[#E5E5E5] rounded bg-white"
+            />
+          </div>
+        </div>
+        <div>
+          <FieldLabel>Outline colour</FieldLabel>
+          <input
+            type="color" value={style.strokeColor} aria-label="Outline colour"
+            onChange={(e) => onChange({ strokeColor: e.target.value })}
+            className="w-16 h-8 p-0 border border-[#E5E5E5] rounded bg-white"
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <ToggleChip active={style.bold} onClick={() => onChange({ bold: !style.bold })} label="Bold" />
+        <ToggleChip
+          active={style.uppercase}
+          onClick={() => onChange({ uppercase: !style.uppercase })}
+          label="UPPERCASE"
+        />
+        <ToggleChip active={style.shadow} onClick={() => onChange({ shadow: !style.shadow })} label="Shadow" />
+        <ToggleChip active={style.bar} onClick={() => onChange({ bar: !style.bar })} label="Text bar" />
+        <ToggleChip
+          active={style.align === 'center'}
+          onClick={() => onChange({ align: style.align === 'center' ? 'left' : 'center' })}
+          label="Centred"
+        />
+      </div>
     </div>
   )
 }
@@ -76,17 +203,27 @@ export default function ThumbnailPage() {
   const navigate    = useNavigate()
   const toast       = useToast()
   const {
-    seoPackage, selectedTopic, setThumbnailData, setStep,
+    seoPackage, selectedTopic, setThumbnailData, setStep, contentType, channelSlug,
   } = useCreateStore()
 
   const title    = seoPackage?.selectedTitle ?? selectedTopic?.topic ?? ''
   const topic    = selectedTopic?.topic ?? title
+  const isShort = contentType === 'short'
+  const previewClass = isShort ? 'aspect-[9/16] max-w-xs mx-auto' : 'aspect-video'
 
   // Background state
   const [bgMode,        setBgMode]        = useState<BgMode>('ai')
   const [dataUrl,       setDataUrl]       = useState<string | null>(null)
   const [pexelsQuery,   setPexelsQuery]   = useState(topic)
   const [showOverlay,   setShowOverlay]   = useState(true)
+
+  // Overlay state. `overlay` is the user's styling; `composed` is the rendered result, which is
+  // both the preview and (on Continue) the file the pipeline uploads.
+  const [overlay,       setOverlay]       = useState<OverlayStyle>(() => ({
+    ...DEFAULT_OVERLAY_STYLE, text: title,
+  }))
+  const [composed,      setComposed]      = useState<string | null>(null)
+  const [composeError,  setComposeError]  = useState<string | null>(null)
 
   // Push to YouTube state
   const [videoId,     setVideoId]     = useState('')
@@ -141,13 +278,40 @@ export default function ThumbnailPage() {
     if (file) handleFile(file)
   }
 
+  const patchOverlay = useCallback((patch: Partial<OverlayStyle>) => {
+    setOverlay((prev) => ({ ...prev, ...patch }))
+  }, [])
+
+  // Compose on every change of background or style. The result *is* the preview and *is* what gets
+  // uploaded, so there is no second rendering path that could disagree with the file.
+  useEffect(() => {
+    if (!dataUrl) {
+      setComposed(null)
+      return
+    }
+    let cancelled = false
+    setComposed(null)
+    const effective: OverlayStyle = showOverlay ? overlay : { ...overlay, text: '' }
+    composeThumbnail(dataUrl, effective, isShort ? { w: 1080, h: 1920 } : undefined)
+      .then((out) => {
+        if (!cancelled) { setComposed(out); setComposeError(null) }
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        setComposed(null)
+        setComposeError(err instanceof Error ? err.message : 'Could not compose the overlay')
+      })
+    return () => { cancelled = true }
+  }, [dataUrl, overlay, showOverlay, isShort])
+
   // ── Push thumbnail to YouTube ──────────────────────────────────────────────
 
   const pushMutation = useMutation({
     mutationFn: () => {
-      if (!dataUrl) throw new Error('Generate a thumbnail first')
+      if (!composed) throw new Error('Wait for a valid cover preview first')
       if (!videoId.trim()) throw new Error('Enter a YouTube Video ID')
-      return youtubeApi.setThumbnail(videoId.trim(), dataUrl)
+      // The composed image, so the thumbnail set on YouTube matches the preview.
+      return youtubeApi.setThumbnail(videoId.trim(), composed, channelSlug || undefined)
     },
     onSuccess: (res) => {
       if (res?.ok) {
@@ -157,14 +321,17 @@ export default function ThumbnailPage() {
         toast.error('Failed to push thumbnail to YouTube')
       }
     },
-    onError: (err: any) => toast.error(err?.message ?? 'Push failed'),
+    onError: (err: unknown) => toast.error(apiErrorMessage(err, 'Push failed')),
   })
 
   // ── Continue to Submit ─────────────────────────────────────────────────────
 
   const handleContinue = () => {
-    if (dataUrl) {
-      setThumbnailData({ dataUrl, title, mode: bgMode })
+    // Send the composed image: the overlay is part of the pixels now, not a preview decoration.
+    const finalImage = composed
+    if (dataUrl && !finalImage) { toast.error('Wait for a valid cover preview first'); return }
+    if (finalImage) {
+      setThumbnailData({ dataUrl: finalImage, title, mode: bgMode, overlay })
     }
     setStep(6)
     navigate('/app/create/submit')
@@ -303,6 +470,17 @@ export default function ThumbnailPage() {
         )}
       </div>
 
+      {/* Overlay controls */}
+      <div className="bg-white border border-[#E5E5E5] rounded-lg p-5 mb-5">
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest">Overlay text</p>
+          {!dataUrl && (
+            <p className="text-[10px] text-[#A3A3A3]">Generate or upload a background to see it</p>
+          )}
+        </div>
+        <OverlayControls style={overlay} onChange={patchOverlay} disabled={!dataUrl} />
+      </div>
+
       {/* Preview */}
       <div className="mb-2">
         <div className="flex items-center justify-between mb-2">
@@ -320,13 +498,30 @@ export default function ThumbnailPage() {
         </div>
 
         {isGenerating ? (
-          <div className="w-full aspect-video bg-[#F5F5F5] border border-[#E5E5E5] rounded-lg flex flex-col items-center justify-center gap-2">
+          <div className={`w-full ${previewClass} bg-[#F5F5F5] border border-[#E5E5E5] rounded-lg flex flex-col items-center justify-center gap-2`}>
             <Loader2 size={24} strokeWidth={1.5} className="animate-spin text-[#A3A3A3]" />
             <p className="text-[12px] text-[#A3A3A3]">Generating background…</p>
           </div>
         ) : (
-          <ThumbnailPreview dataUrl={dataUrl} title={title} showOverlay={showOverlay} />
+          <div className={`relative w-full ${previewClass} bg-[#F5F5F5] border border-[#E5E5E5] rounded-lg overflow-hidden`}>
+            {(composed ?? dataUrl) ? (
+              <img
+                src={(composed ?? dataUrl) as string}
+                alt="Thumbnail preview"
+                data-testid="thumbnail-preview"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <ImageIcon size={40} strokeWidth={1} className="text-[#D4D4D4]" />
+              </div>
+            )}
+          </div>
         )}
+        {composeError && <p className="text-[11px] text-[#DC2626] mt-2">{composeError}</p>}
+        <p className="text-[10px] text-[#A3A3A3] mt-2">
+          This preview is the uploaded file ({isShort ? '9:16' : '16:9'}). YouTube may crop it differently across surfaces.
+        </p>
       </div>
 
       {/* Push to YouTube */}
@@ -346,7 +541,7 @@ export default function ThumbnailPage() {
           />
           <button
             onClick={() => pushMutation.mutate()}
-            disabled={pushMutation.isPending || !dataUrl || !videoId.trim() || pushDone}
+            disabled={pushMutation.isPending || !composed || !videoId.trim() || pushDone}
             className="flex items-center gap-1.5 h-8 px-4 bg-[#0A0A0A] text-white text-[12px] font-medium rounded hover:bg-[#262626] disabled:opacity-40 transition-colors"
           >
             {pushDone ? (
@@ -375,4 +570,3 @@ export default function ThumbnailPage() {
     </div>
   )
 }
-

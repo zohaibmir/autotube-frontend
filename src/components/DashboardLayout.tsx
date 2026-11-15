@@ -3,10 +3,12 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Lightbulb, ListOrdered, Briefcase, Tv, Settings, CreditCard,
   LogOut, ChevronLeft, Menu, BarChart2, Share2, CalendarDays, Film, Sparkles, ShieldCheck, MessageSquare, Clapperboard,
-  AlertCircle, ArrowRight, X,
+  AlertCircle, ArrowRight, X, Zap,
 } from 'lucide-react'
+import Logo from '@components/Logo'
 import { useAuthStore } from '@store/auth'
 import { useQuery } from '@tanstack/react-query'
+import { useQueue } from '@hooks/useJobs'
 import { billingApi } from '@api/services'
 
 interface DashboardLayoutProps {
@@ -66,15 +68,45 @@ const BOTTOM_NAV = [
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [bannerDismissed, setBannerDismissed] = useState(false)
+  // W8: structured 402s (insufficient credits) dispatched by api/client.ts land
+  // here as an upgrade banner, regardless of which page fired the render.
+  const [creditBlock, setCreditBlock] = useState<{
+    cost_credits: number
+    credits_remaining: number
+    message?: string
+  } | null>(null)
   const location = useLocation()
   const navigate = useNavigate()
   const { user, logout } = useAuthStore()
   const userEmail = user?.email ?? ''
   const isAdmin = user?.role === 'admin' || user?.role === 'super_admin'
 
+  useEffect(() => { setMobileMenuOpen(false) }, [location.pathname, location.search])
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileMenuOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [mobileMenuOpen])
+
   // Reset banner when usage drops (e.g. plan upgrade)
   useEffect(() => { setBannerDismissed(false) }, [])
+
+  useEffect(() => {
+    const onInsufficient = (e: Event) => {
+      const d = (e as CustomEvent).detail ?? {}
+      if (typeof d.cost_credits === 'number' && typeof d.credits_remaining === 'number') {
+        setCreditBlock({ cost_credits: d.cost_credits, credits_remaining: d.credits_remaining, message: d.message })
+      }
+    }
+    window.addEventListener('credits:insufficient', onInsufficient)
+    return () => window.removeEventListener('credits:insufficient', onInsufficient)
+  }, [])
 
   const { data: usageData } = useQuery({
     queryKey: ['billing-usage'],
@@ -83,6 +115,11 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     refetchInterval: 120_000,
     retry: false,
   })
+
+  // Queue depth for the sidebar badge (TEST §3.6). Shares the Queue page's own
+  // query key, so the badge and the page can never disagree.
+  const { data: queueItems } = useQueue()
+  const queueCount = Array.isArray(queueItems) ? queueItems.length : 0
 
   const handleSignOut = async () => {
     await logout()
@@ -102,18 +139,24 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
       <a href="#main-content" className="skip-link">Skip to main content</a>
 
       {/* ── Sidebar ─────────────────────────────────────────────────────── */}
+      {mobileMenuOpen && <button type="button" aria-label="Close navigation" onClick={() => setMobileMenuOpen(false)}
+        className="fixed inset-0 z-40 bg-black/30 md:hidden" />}
       <aside
-        className={`${sidebarOpen ? 'w-[220px]' : 'w-[52px]'} flex-shrink-0 bg-white border-r border-[#E5E5E5] flex flex-col transition-all duration-200 overflow-hidden`}
+        id="dashboard-navigation"
+        className={`${mobileMenuOpen ? 'flex' : 'hidden'} fixed inset-y-0 left-0 z-50 w-[220px] md:static md:z-auto md:flex ${sidebarOpen ? 'md:w-[220px]' : 'md:w-[52px]'} flex-shrink-0 bg-white border-r border-[#E5E5E5] flex-col transition-all duration-200 overflow-hidden`}
       >
         {/* Logo row */}
         <div className="h-14 flex items-center justify-between px-3 flex-shrink-0">
           {sidebarOpen && (
-            <span className="text-[13px] font-semibold text-[#0A0A0A] tracking-tight truncate pl-1">
-              YT Automation
+            <span className="pl-1 flex items-center">
+              <Logo size={22} wordmarkSize={13} />
             </span>
           )}
           <button
-            onClick={() => setSidebarOpen(!sidebarOpen)}
+            onClick={() => {
+              if (window.matchMedia('(max-width: 767px)').matches) setMobileMenuOpen(false)
+              else setSidebarOpen(!sidebarOpen)
+            }}
             className="w-8 h-8 flex items-center justify-center text-[#A3A3A3] hover:text-[#0A0A0A] hover:bg-[#F5F5F5] rounded transition-colors flex-shrink-0"
             aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
             aria-expanded={sidebarOpen}
@@ -138,6 +181,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                 const Icon   = item.icon
                 const active = isActive(item.path, item.exact)
                 const isPrimary = 'primary' in item && item.primary
+                const badge = item.path === '/app/queue' ? queueCount : 0
 
                 if (isPrimary && !active) {
                   return (
@@ -161,7 +205,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                     to={item.path}
                     title={!sidebarOpen ? item.label : undefined}
                     className={[
-                      'flex items-center gap-2.5 px-2 h-8 rounded mb-0.5 transition-colors',
+                      'relative flex items-center gap-2.5 px-2 h-8 rounded mb-0.5 transition-colors',
                       !sidebarOpen ? 'justify-center' : '',
                       active
                         ? 'border-l-2 border-[#0A0A0A] bg-[#F5F5F5] text-[#0A0A0A] font-semibold rounded-l-none'
@@ -174,6 +218,15 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                       className={`flex-shrink-0 ${active ? 'text-[#0A0A0A]' : 'text-[#A3A3A3]'}`}
                     />
                     {sidebarOpen && <span className="text-[13px]">{item.label}</span>}
+                    {sidebarOpen && badge > 0 && (
+                      <span className="ml-auto text-[10px] font-medium tabular-nums px-1.5 py-0.5 rounded-full bg-[#E5E5E5] text-[#525252]">
+                        {badge}
+                      </span>
+                    )}
+                    {/* Collapsed: a dot, since there is no room for the number. */}
+                    {!sidebarOpen && badge > 0 && (
+                      <span className="absolute top-1.5 right-2 w-1.5 h-1.5 rounded-full bg-[#0A0A0A]" />
+                    )}
                   </Link>
                 )
               })}
@@ -237,6 +290,30 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                   Upgrade <ArrowRight size={9} strokeWidth={1.5} />
                 </Link>
               )}
+              {/* W8: credit balance — the real spend limit now that credits are
+                  the currency. Amber below 25% of the plan allowance, red below
+                  the cost of a stock long-form. */}
+              {usageData.credits_remaining != null && (
+                <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-[#F5F5F5]">
+                  <span className="flex items-center gap-1 text-[10px] font-medium text-[#A3A3A3]">
+                    <Zap size={9} strokeWidth={1.5} />
+                    {usageData.credits_remaining} credits
+                  </span>
+                  {(() => {
+                    const rem = usageData.credits_remaining ?? 0
+                    const allowance = usageData.plan_credits
+                    const low = allowance != null && rem <= allowance * 0.25
+                    return low ? (
+                      <Link
+                        to="/app/billing"
+                        className="flex items-center gap-0.5 text-[10px] font-medium text-[#B45309] hover:text-[#0A0A0A] transition-colors"
+                      >
+                        Top up <ArrowRight size={9} strokeWidth={1.5} />
+                      </Link>
+                    ) : null
+                  })()}
+                </div>
+              )}
             </div>
           )}
 
@@ -263,6 +340,36 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
       {/* ── Main content ─────────────────────────────────────────────────── */}
       <main id="main-content" className="flex-1 overflow-auto min-w-0" tabIndex={-1}>
+        <div className="md:hidden flex items-center gap-3 border-b bg-white px-4 py-2">
+          <button type="button" aria-label="Open navigation" aria-controls="dashboard-navigation" aria-expanded={mobileMenuOpen}
+            className="rounded border p-2" onClick={() => { setSidebarOpen(true); setMobileMenuOpen(true) }}>
+            <Menu size={18} />
+          </button>
+          <Logo size={22} wordmarkSize={13} />
+        </div>
+        {/* W8: insufficient-credits banner — fired by the global 402 interceptor
+            whenever a render is blocked by the credit gate on ANY page */}
+        {creditBlock && location.pathname !== '/app/billing' && (
+          <div className="flex items-center justify-between gap-3 px-6 py-2.5 border-b text-[13px] bg-[#FEF2F2] border-[#FECACA] text-[#DC2626]">
+            <div className="flex items-center gap-2">
+              <Zap size={14} strokeWidth={1.5} className="flex-shrink-0" />
+              <span>
+                <strong>Not enough credits.</strong>{' '}
+                {creditBlock.message ??
+                  `This render costs ${creditBlock.cost_credits} credits and you have ${creditBlock.credits_remaining}.`}{' '}
+                <Link to="/app/billing" className="underline font-medium hover:opacity-80">Upgrade or top up</Link>{' '}
+                to keep rendering.
+              </span>
+            </div>
+            <button
+              onClick={() => setCreditBlock(null)}
+              className="flex-shrink-0 hover:opacity-60 transition-opacity"
+              aria-label="Dismiss"
+            >
+              <X size={14} strokeWidth={1.5} />
+            </button>
+          </div>
+        )}
         {/* Usage warning banner - shown at ≥80%, hidden if dismissed or on billing page */}
         {usageData && usageData.plan !== 'enterprise' && usageData.plan !== 'unlimited' && usageData.pct >= 80 && !bannerDismissed && location.pathname !== '/app/billing' && (
           <div className={`flex items-center justify-between gap-3 px-6 py-2.5 border-b text-[13px] ${

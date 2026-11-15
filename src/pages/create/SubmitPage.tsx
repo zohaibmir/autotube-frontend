@@ -1,22 +1,23 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { CheckCircle2, Loader2, ListOrdered, Plus, Zap, ArrowRight, Clapperboard } from 'lucide-react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useCreateStore } from '@store/create'
-import { useChannels } from '@hooks/useJobs'
 import { queueApi, jobsApi, shortsApi, billingApi } from '@api/services'
 import { useToast } from '@components/Toast'
+import ShortsDurationSelect, { useShortsDuration } from '@components/ShortsDurationSelect'
 
 export default function SubmitPage() {
   const navigate  = useNavigate()
   const toast     = useToast()
-  const { data: channels = [] } = useChannels()
   const {
     selectedTopic, scriptContent, seoPackage, channelSlug, contentType,
-    thumbnailData, voiceId, visualSource, visualCustomVideoPath, artStyle, bgMusicPath, setStep, reset,
+    thumbnailData, voiceId, visualSource, visualCustomVideoPath, artStyle, imageProvider, bgMusicPath, reset,
+    shortsDurationSeconds, setShortsDurationSeconds,
   } = useCreateStore()
 
   const isShort = contentType === 'short'
+  const shortDuration = useShortsDuration(channelSlug, shortsDurationSeconds)
   const [mode, setMode] = useState<'run' | 'queue'>('run')
   const [shortsCount, setShortsCount] = useState(1)
   const [shortsMode, setShortsMode] = useState<'separate' | 'extract'>('separate')
@@ -25,8 +26,63 @@ export default function SubmitPage() {
   // screen below reads this instead of the live `isShort` because the store
   // (and its contentType) gets reset right after success (see onSuccess).
   const [doneWasShort, setDoneWasShort] = useState(false)
-  const [planGate, setPlanGate] = useState<{ used: number; limit: number; plan: string } | null>(null)
   const [checkingOut, setCheckingOut] = useState(false)
+  // W8: backend 402 insufficient_credits → full-page upgrade gate.
+  const [creditGate, setCreditGate] = useState<{
+    cost_credits: number
+    credits_remaining: number
+    message?: string
+  } | null>(null)
+
+  // W8: balance + the pre-render quote under the submit button.
+  //
+  // The quote is computed server-side from the effective configuration (R7), because the number depends on
+  // things this screen cannot see: the channel's visual mode and the platform's TTS model decide the recipe
+  // that will actually be charged. Reading `recipe_costs.longform_stock` here -- what this used to do --
+  // showed a *recipe* as if it were a price, and was wrong for a premium voice and meaningless for an
+  // animated channel, where no fixed price exists until the script does.
+  const { data: usageData } = useQuery({
+    queryKey: ['billing-usage'],
+    queryFn: () => billingApi.usage(),
+    staleTime: 30_000,
+    retry: false,
+  })
+  const quotePayload = {
+    topic: (selectedTopic?.topic ?? '') || 'quote',
+    channel_slug: channelSlug || undefined,
+    shortsCount,
+    shortsMode,
+    visualSource: visualSource !== 'stock' ? visualSource : undefined,
+    bgMusicPath: bgMusicPath || undefined,
+    voice_id: voiceId || undefined,
+    language: undefined as string | undefined,
+  }
+  const { data: quote, isLoading: quoteLoading } = useQuery({
+    queryKey: ['pipeline-quote', quotePayload],
+    queryFn: () => jobsApi.quote(quotePayload),
+    // Re-quote only when the configuration changes: the server resolves it from channel profile and
+    // platform config, so nothing on this screen invalidates it.
+    staleTime: 60_000,
+    retry: false,
+    // A quote that fails to load must not block submitting -- `/run` is the real gate.
+    enabled: !isShort && !!selectedTopic?.topic,
+  })
+
+  // The Shorts path is a different pipeline (`shortsApi.scriptRun`) with its own recipe, so the long-form
+  // quote does not describe it. Kept as-is rather than replaced with a number that would be about the wrong
+  // job; wiring Shorts into the quote is separate work.
+  const shortCost = usageData?.recipe_costs?.short_stock ?? null
+
+  // `mode === 'measured'` means the figure is a floor, not a total, and `affordable: null` means the
+  // balance could not be read. Neither is rendered as a fact below.
+  const quotedCredits = quote?.pricing.credits ?? null
+  const pricedCredits = isShort ? shortCost : quotedCredits
+  const isMeasured = !isShort && quote?.pricing.mode === 'measured'
+  const creditsRemaining = quote?.pricing.credits_remaining ?? usageData?.credits_remaining ?? null
+  const cannotAfford =
+    mode === 'run' &&
+    !isShort &&
+    quote?.pricing.affordable === false
 
   const topic = selectedTopic?.topic ?? ''
   const title = seoPackage?.selectedTitle ?? topic
@@ -35,6 +91,10 @@ export default function SubmitPage() {
 
   const submitMutation = useMutation({
     mutationFn: async () => {
+      if ((isShort || (shortsCount > 0 && shortsMode === 'separate')) &&
+          (shortDuration.loading || shortDuration.error)) {
+        throw new Error('Load the channel default or select an explicit Shorts length first.')
+      }
       if (isShort) {
         // Shorts content-type: the script written in this wizard IS the whole
         // Short - build it directly via the standalone vertical-Short pipeline
@@ -45,16 +105,35 @@ export default function SubmitPage() {
           scriptText:     scriptContent,
           channel_slug:   channelSlug || undefined,
           voice_id:       voiceId || undefined,
+          duration_seconds: shortDuration.seconds,
           seoTitle:       seoPackage?.selectedTitle || undefined,
           seoDescription: seoPackage?.description   || undefined,
           seoTags:        seoPackage?.tags?.join(', ') || undefined,
           thumbDataUrl:   thumbDataUrl || undefined,
           visualSource: visualSource !== 'stock' ? visualSource : undefined,
           artStyle: visualSource === 'ai_image' ? (artStyle || undefined) : undefined,
+          imageProvider: visualSource === 'ai_image' ? (imageProvider || undefined) : undefined,
           bgMusicPath: bgMusicPath || undefined,
         })
       } else if (mode === 'queue') {
-        await queueApi.add(topic, channelSlug || undefined)
+        // Send the reviewed configuration, not just the topic (F3/R3). `queueApi.add` has accepted a
+        // structured `payload` since the queue gained one, and `pipeline.run()` accepts every field
+        // below — but this branch passed only the topic, so a creator who wrote a script and designed
+        // SEO and a thumbnail watched the scheduler discard all of it and regenerate its own.
+        //
+        // Keep these keys in step with the Run branch above and with
+        // `scheduler.pipeline_kwargs_from_payload()`, which is what reads them back.
+        await queueApi.add(topic, channelSlug || undefined, undefined, contentType, {
+          scriptText:    scriptContent || undefined,
+          seoTitle:      seoPackage?.selectedTitle || undefined,
+          seoDescription: seoPackage?.description   || undefined,
+          seoTags:       seoPackage?.tags?.join(', ') || undefined,
+          thumbDataUrl:  thumbDataUrl || undefined,
+          voice_id:      voiceId || undefined,
+          shortsCount:   shortsCount || undefined,
+          shortsMode:    shortsMode || undefined,
+          shorts_duration_seconds: shortDuration.seconds,
+        })
       } else {
         await jobsApi.run({
           topic,
@@ -68,9 +147,11 @@ export default function SubmitPage() {
           voice_id:       voiceId || undefined,
           shortsCount,
           shortsMode: shortsMode,
+          shorts_duration_seconds: shortDuration.seconds,
           visualSource: visualSource !== 'stock' ? visualSource : undefined,
           visualCustomVideoPath: visualSource === 'custom_video' ? (visualCustomVideoPath || undefined) : undefined,
           artStyle: visualSource === 'ai_image' ? (artStyle || undefined) : undefined,
+          imageProvider: visualSource === 'ai_image' ? (imageProvider || undefined) : undefined,
           bgMusicPath: bgMusicPath || undefined,
         })
       }
@@ -86,10 +167,15 @@ export default function SubmitPage() {
       reset()
     },
     onError: (err: any) => {
-      // 402 = plan limit reached - show upgrade gate instead of generic toast
+      // 402 = blocked by a billing gate - show the matching upgrade gate
       const detail = err?.response?.data?.detail
-      if (err?.response?.status === 402 && detail?.code === 'plan_limit_reached') {
-        setPlanGate({ used: detail.used, limit: detail.limit, plan: detail.plan })
+      if (err?.response?.status === 402 && detail?.code === 'insufficient_credits') {
+        // W8: structured credits 402 from the pre-render gate
+        setCreditGate({
+          cost_credits: detail.cost_credits,
+          credits_remaining: detail.credits_remaining,
+          message: detail.message,
+        })
       } else {
         toast.error('Submission failed - try again')
       }
@@ -105,17 +191,17 @@ export default function SubmitPage() {
         </h1>
         <p className="text-[13px] text-[#525252] max-w-xs mb-8">
           {doneWasShort
-            ? 'Your vertical Short has started building and will upload to YouTube Shorts automatically. You can track progress in Jobs.'
+            ? 'Your vertical Short has started building and will upload to YouTube Shorts automatically. It will appear in Content when it finishes.'
             : mode === 'queue'
             ? 'Your topic has been added to the queue. It will run on the next scheduled slot.'
-            : 'Your video pipeline has started. You can track progress in Jobs.'}
+            : 'Your video pipeline has started. It will appear in Content when it finishes.'}
         </p>
         <div className="flex gap-3">
           <button
-            onClick={() => navigate(mode === 'queue' ? '/app/queue' : '/app/jobs')}
+            onClick={() => navigate(mode === 'queue' ? '/app/queue' : '/app/studio')}
             className="h-8 px-4 text-[12px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] transition-colors"
           >
-            {mode === 'queue' ? 'View Queue' : 'View Jobs'}
+            {mode === 'queue' ? 'View Queue' : 'View in Content'}
           </button>
           <button
             onClick={() => { reset(); navigate('/app/create/ideas') }}
@@ -128,8 +214,8 @@ export default function SubmitPage() {
     )
   }
 
-  // ── Plan limit gate ────────────────────────────────────────────────────────
-  if (planGate) {
+  // ── Credit gate (W8) ─────────────────────────────────────────────────────────
+  if (creditGate) {
     const handleUpgrade = async () => {
       setCheckingOut(true)
       try {
@@ -146,40 +232,12 @@ export default function SubmitPage() {
         <div className="w-12 h-12 rounded-full bg-[#FEF3C7] flex items-center justify-center mb-5">
           <Zap size={22} strokeWidth={1.5} className="text-[#D97706]" />
         </div>
-        <h1 className="text-[18px] font-semibold text-[#0A0A0A] mb-2">Monthly limit reached</h1>
+        <h1 className="text-[18px] font-semibold text-[#0A0A0A] mb-2">Not enough credits</h1>
         <p className="text-[13px] text-[#525252] mb-6 max-w-xs">
-          You've used all <strong>{planGate.limit}</strong> free videos this month.
-          Upgrade to <strong>Pro</strong> for 50 videos/month, 5 channels, and all social platforms.
+          {creditGate.message ??
+            `This render costs ${creditGate.cost_credits} credits and you have ${creditGate.credits_remaining}.`}{' '}
+          Upgrade to <strong>Pro</strong> for 900 credits/month, 5 channels, and all social platforms.
         </p>
-
-        {/* Plan comparison */}
-        <div className="w-full grid grid-cols-2 gap-3 mb-6 text-left">
-          <div className="border border-[#E5E5E5] rounded-lg p-4">
-            <p className="text-[10px] font-medium tracking-widest text-[#A3A3A3] uppercase mb-2">Free</p>
-            <p className="text-xl font-semibold text-[#0A0A0A] mb-3">$0<span className="text-sm font-normal text-[#A3A3A3]">/mo</span></p>
-            <ul className="space-y-1">
-              {['5 videos/month', '1 channel', 'YouTube only'].map(f => (
-                <li key={f} className="flex items-center gap-1.5 text-[11px] text-[#A3A3A3]">
-                  <CheckCircle2 size={10} strokeWidth={2} /> {f}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div className="border border-[#0A0A0A] rounded-lg p-4 relative">
-            <span className="absolute -top-2.5 left-3 text-[9px] font-bold tracking-widest uppercase bg-[#0A0A0A] text-white px-2 py-0.5 rounded-full">
-              Recommended
-            </span>
-            <p className="text-[10px] font-medium tracking-widest text-[#A3A3A3] uppercase mb-2">Pro</p>
-            <p className="text-xl font-semibold text-[#0A0A0A] mb-3">$49<span className="text-sm font-normal text-[#A3A3A3]">/mo</span></p>
-            <ul className="space-y-1">
-              {['50 videos/month', '5 channels', 'All social platforms'].map(f => (
-                <li key={f} className="flex items-center gap-1.5 text-[11px] text-[#0A0A0A]">
-                  <CheckCircle2 size={10} strokeWidth={2} className="text-[#16A34A]" /> {f}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
 
         <button
           onClick={handleUpgrade}
@@ -192,14 +250,10 @@ export default function SubmitPage() {
           }
         </button>
         <Link
-          to="/app/queue"
+          to="/app/billing"
           className="text-[12px] text-[#A3A3A3] hover:text-[#525252] transition-colors"
-          onClick={() => {
-            // Queue the topic instead so work isn't lost
-            queueApi.add(topic, channelSlug || undefined).catch(() => {})
-          }}
         >
-          Queue for later instead →
+          View billing & usage →
         </Link>
       </div>
     )
@@ -238,7 +292,7 @@ export default function SubmitPage() {
               <div className="w-24 aspect-video rounded overflow-hidden border border-[#E5E5E5] bg-[#F5F5F5]">
                 <img src={thumbDataUrl} alt="Thumbnail" className="w-full h-full object-cover" />
               </div>
-              <p className="text-[12px] text-[#525252]">Will be applied after upload</p>
+              <p className="text-[12px] text-[#525252]">Applied after YouTube finishes processing; check cover status on the job page.</p>
             </div>
           </div>
         )}
@@ -317,7 +371,7 @@ export default function SubmitPage() {
                   {
                     val: 'separate' as const,
                     label: 'Dedicated script',
-                    desc: 'AI writes a purpose-built 60s script for this Short - native short-form hook, better engagement.',
+                    desc: `AI writes a purpose-built ${shortDuration.seconds}s script with its own hook and payoff.`,
                   },
                   {
                     val: 'extract' as const,
@@ -343,14 +397,58 @@ export default function SubmitPage() {
                   </button>
                 ))}
               </div>
+              {shortsMode === 'separate' && <div className="mt-3">
+                <ShortsDurationSelect value={shortsDurationSeconds} onChange={setShortsDurationSeconds}
+                  channelDefault={shortDuration.channelDefault} />
+                {shortDuration.error && <p role="alert" className="text-xs text-red-600">Could not load the channel default. Retry or select an explicit length.</p>}
+              </div>}
             </div>
           )}
         </div>
       )}
 
+      {/* W8/R7: the pre-render quote — the user knows what this costs before clicking, and the number is
+          the one the server's gate will apply (both read the same recipe decision). A *measured* job shows
+          a floor with "from", because its clip count is not known until the script exists; quoting a total
+          there would be inventing precision. */}
+      {(pricedCredits != null || quoteLoading) && (
+        <div className={`flex items-center justify-between gap-2 px-3 py-2 border rounded-md mb-3 text-[12px] ${
+          cannotAfford
+            ? 'bg-red-50 border-red-100 text-red-700'
+            : 'bg-[#FAFAFA] border-[#E5E5E5] text-[#525252]'
+        }`}>
+          <span className="flex items-center gap-1.5">
+            <Zap size={12} strokeWidth={1.5} className="flex-shrink-0" />
+            {quoteLoading && pricedCredits == null
+              ? 'Checking what this job costs…'
+              : mode === 'queue' && !isShort
+                ? `Queued items spend ${isMeasured ? 'at least ' : ''}${pricedCredits} credits when they render on schedule.`
+                : `${isMeasured ? 'From ' : 'Uses '}${pricedCredits} credits${
+                    creditsRemaining != null ? ` of your ${creditsRemaining}` : ''}${
+                    isMeasured ? ' — the final total depends on the render' : ''}`}
+          </span>
+          {cannotAfford && (
+            <Link to="/app/billing" className="text-[12px] font-medium underline hover:opacity-80 flex-shrink-0">
+              Upgrade
+            </Link>
+          )}
+        </div>
+      )}
+
+      {/* A blocker the server already knows about (a revoked channel, a missing credential). Shown before
+          the button rather than after it fails, because the alternative is discovering it once the
+          expensive work has started. */}
+      {!!quote?.readiness.blockers.length && (
+        <div className="flex items-start gap-2 px-3 py-2 border border-amber-200 bg-amber-50 text-amber-800 rounded-md mb-3 text-[12px]">
+          <span>
+            {quote.readiness.blockers[0]?.error || 'This configuration is not ready to run yet.'}
+          </span>
+        </div>
+      )}
+
       <button
         onClick={() => submitMutation.mutate()}
-        disabled={submitMutation.isPending || !topic}
+        disabled={submitMutation.isPending || !topic || cannotAfford}
         className="w-full h-10 bg-[#0A0A0A] text-white text-[13px] font-medium rounded hover:bg-[#262626] transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
       >
         {submitMutation.isPending

@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Film, Upload, Sparkles, Music, CheckCircle2, Loader2, X, ChevronRight } from 'lucide-react'
-import { useCreateStore, type VisualSource, type ArtStyle } from '@store/create'
+import { useCreateStore, type VisualSource, type ArtStyle, type ImageProvider } from '@store/create'
 import { visualsApi } from '@api/services'
 import { useToast } from '@components/Toast'
 
@@ -126,8 +126,8 @@ export default function VisualsPage() {
   const navigate = useNavigate()
   const toast    = useToast()
   const {
-    visualSource, visualCustomVideoPath, artStyle, bgMusicPath,
-    setVisualSource, setVisualCustomVideoPath, setArtStyle, setBgMusicPath, setStep,
+    visualSource, visualCustomVideoPath, artStyle, imageProvider, bgMusicPath,
+    setVisualSource, setVisualCustomVideoPath, setArtStyle, setImageProvider, setBgMusicPath, setStep,
   } = useCreateStore()
 
   const [uploading, setUploading] = useState(false)
@@ -241,6 +241,24 @@ export default function VisualsPage() {
                 </span>
               </button>
             ))}
+          </div>
+
+          {/* AI image provider picker — per-video override of the platform/channel default */}
+          <div className="mt-4">
+            <p className="text-[11px] font-medium text-[#525252] mb-2">Image provider</p>
+            <select
+              value={imageProvider}
+              onChange={(e) => setImageProvider(e.target.value as ImageProvider)}
+              className="h-8 pl-3 pr-8 text-[12px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
+            >
+              <option value="">Platform default</option>
+              <option value="openai">OpenAI gpt-image-1 (paid)</option>
+              <option value="replicate">Replicate Flux/SDXL (paid, cheaper)</option>
+              <option value="pollinations">Pollinations.ai (free)</option>
+            </select>
+            <p className="text-[11px] text-[#A3A3A3] mt-1">
+              Overrides the channel default. Empty uses the channel's choice (or the platform default).
+            </p>
           </div>
         </div>
       )}

@@ -33,8 +33,13 @@ test.describe('Settings page', () => {
 
   test('Notifications tab shows toggles', async ({ page }) => {
     await page.getByRole('tab', { name: 'Notifications', exact: true }).click()
+    // The tab renders a "Loading…" placeholder until the notification-prefs
+    // query resolves. Asserting on the toggles without waiting for that made
+    // this test flaky under parallel load (it passed in isolation and failed in
+    // the full run), so wait for the loading state to clear first.
+    await expect(page.getByText('Loading…')).toBeHidden({ timeout: 15_000 })
     const toggles = page.locator('[role="switch"], input[type="checkbox"]')
-    await expect(toggles.first()).toBeAttached({ timeout: 5000 })
+    await expect(toggles.first()).toBeAttached({ timeout: 10_000 })
   })
 
   test('Account tab shows profile email', async ({ page }) => {

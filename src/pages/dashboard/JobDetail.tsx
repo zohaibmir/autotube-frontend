@@ -7,15 +7,76 @@ import {
 } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useJob, useJobAction, useChannels } from '@hooks/useJobs'
-import { jobsApi } from '@api/services'
+import { jobsApi, youtubeApi } from '@api/services'
 import { useToast } from '@components/Toast'
+import { apiErrorMessage } from '@lib/apiError'
+
+interface CoverEvent {
+  details?: {
+    short_preview?: {
+      thumbnail_data_url?: string | null
+      thumbnail?: { ok: boolean; detail?: string; reason?: string | null }
+    }
+  }
+}
+
+function JobCoverPanel({ jobId, videoId, channelSlug, events }: {
+  jobId: string
+  videoId: string
+  channelSlug?: string
+  events: CoverEvent[]
+}) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const preview = [...events].reverse().find(event => event.details?.short_preview)?.details?.short_preview
+  const retry = useMutation({
+    mutationFn: () => {
+      if (!preview?.thumbnail_data_url) throw new Error('No saved cover is available for this job.')
+      return youtubeApi.setThumbnail(videoId, preview.thumbnail_data_url, channelSlug, jobId)
+    },
+    onSuccess: () => {
+      toast.success('Cover accepted by YouTube. Display updates may take time.')
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+    },
+    onError: (error: unknown) => toast.error(apiErrorMessage(error, 'Could not reapply the cover')),
+  })
+
+  return (
+    <div className="bg-white border border-[#E5E5E5] rounded-md p-6">
+      <h3 className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-3">YouTube cover</h3>
+      <p className="text-sm">
+        {preview?.thumbnail?.ok
+          ? 'Custom cover accepted by YouTube'
+          : preview?.thumbnail
+            ? `Cover not applied: ${preview.thumbnail.detail || preview.thumbnail.reason || 'Unknown error'}`
+            : 'Cover outcome not recorded for this older job'}
+      </p>
+      <p className="text-xs text-[#737373] mt-2">
+        Video upload success does not confirm the Shorts-grid image. YouTube can update the
+        watch thumbnail before the Shorts grid; refresh and check both surfaces.
+      </p>
+      {preview?.thumbnail_data_url && (
+        <div className="flex items-start gap-4 mt-4">
+          <img src={preview.thumbnail_data_url} alt="Saved YouTube cover" className="w-24 rounded" />
+          <button onClick={() => retry.mutate()} disabled={retry.isPending}
+            className="border rounded px-3 py-2 text-xs disabled:opacity-40">
+            {retry.isPending ? 'Applying cover…' : 'Reapply cover only'}
+          </button>
+        </div>
+      )}
+      <p className="text-xs text-[#737373] mt-2">Cover retries do not re-upload or change video visibility.</p>
+    </div>
+  )
+}
 
 // ── Pipeline stages - keyed to job.current_step values ───────────────────────
 const STAGES = [
   { key: 'script',  label: 'Script Generation', keys: ['script', 'content', 'prompt'] },
   { key: 'audio',   label: 'Audio & Voiceover',  keys: ['audio', 'voice', 'tts', 'music'] },
   { key: 'visuals', label: 'Visuals Assembly',   keys: ['visual', 'pexels', 'image', 'b-roll'] },
-  { key: 'render',  label: 'Final Render',       keys: ['render', 'ffmpeg', 'encode', 'compose', 'building video', 'thumbnail'] },
+  // 'assembl' is what the standalone Short path reports ("assembling_vertical_video"); without it the
+  // tracker had no active stage for that whole phase, so every stage looked unstarted at 75%.
+  { key: 'render',  label: 'Final Render',       keys: ['render', 'ffmpeg', 'encode', 'compose', 'assembl', 'mux', 'building video', 'thumbnail'] },
   { key: 'upload',  label: 'YouTube Upload',     keys: ['upload', 'youtube', 'publish'] },
 ]
 
@@ -23,6 +84,19 @@ function matchStage(currentStep: string | undefined): number {
   if (!currentStep) return -1
   const step = currentStep.toLowerCase()
   return STAGES.findIndex((s) => s.keys.some((k) => step.includes(k)))
+}
+
+// Last resort when a step name belongs to a renderer we have not seen yet: the progress the job already
+// reports is a better signal than "no stage active". Buckets follow the reported milestones
+// (10 script, 25-30 audio, 55 visuals, 75-92 render, 95 upload).
+function stageFromProgress(progress: number | undefined): number {
+  const pct = Number(progress || 0)
+  if (pct <= 0) return -1
+  if (pct < 25) return 0
+  if (pct < 50) return 1
+  if (pct < 70) return 2
+  if (pct < 92) return 3
+  return 4
 }
 
 // ── Stage icon - Nordic tokens only ─────────────────────────────────────────
@@ -60,7 +134,26 @@ function computeDuration(job: any): string | null {
 // ── Error insight - maps known error patterns to friendly guidance ─────────────
 function errorInsight(errorMsg: string): string {
   const msg = (errorMsg || '').toLowerCase()
-  if (msg.includes('api key') || msg.includes('anthropic') || msg.includes('401') || msg.includes('invalid key'))
+  // A server-side crash, not a configuration problem. Deliberately checked FIRST, and blunt about it: the
+  // old order matched the word "visual" inside "VISUAL_MODE is not defined" (the message is lowercased)
+  // and advised the user to check their Pexels key -- which sent them looking in completely the wrong place
+  // while the actual fault was an undeclared name in shorts_builder.py (TEST.md §29.41).
+  const crashes = ['is not defined', 'nameerror', 'traceback', 'attributeerror', 'typeerror',
+    'keyerror', 'indexerror', 'valueerror', 'unexpected keyword', 'positional argument']
+  if (crashes.some((needle) => msg.includes(needle)))
+    return 'This looks like a bug in the platform rather than a setting you can change. Please report it with the job id — the details below are what is needed.'
+  // Voice-over before the generic "quota" line: a TTS quota failure and a YouTube quota failure need
+  // completely different actions, and the message names the providers now.
+  if (msg.includes('tts') || msg.includes('elevenlabs') || msg.includes('edge-tts') || msg.includes('gtts')) {
+    if (msg.includes('403'))
+      return 'The free Edge voice is being refused by Microsoft — usually a stale edge-tts package (the token scheme changed in 7.3.0). Update the dependency, or add ElevenLabs credits.'
+    return 'Voice-over failed. ElevenLabs credits may be exhausted; check Settings → API Keys, or let the free fallback voices run.'
+  }
+  if (msg.includes('pexels'))
+    return 'The stock media search was refused. If you use your own Pexels key, check it in Settings → API Keys; otherwise the server’s key needs rotating.'
+  if (msg.includes('no clips were generated'))
+    return 'The visual provider returned no clips. If you use your own Pexels key, check it in Settings → API Keys; if that key works, the provider may be rate-limiting or down.'
+  if (msg.includes('anthropic'))
     return 'Your Anthropic API key may be missing or invalid. Check Settings → API Keys.'
   if (msg.includes('quota') || msg.includes('rate limit') || msg.includes('429'))
     return 'API rate limit hit. Wait a few minutes and retry.'
@@ -68,8 +161,6 @@ function errorInsight(errorMsg: string): string {
     return 'YouTube auth may need refreshing. Go to Channels and reset auth.'
   if (msg.includes('ffmpeg') || msg.includes('render') || msg.includes('encode'))
     return 'Render failed - usually a disk space or corrupt clip issue. Retry or check server logs.'
-  if (msg.includes('pexels') || msg.includes('visual') || msg.includes('download'))
-    return 'Failed fetching video clips. Check your Pexels API key or network connectivity.'
   return 'Review the error below and retry. If it persists, check the server logs.'
 }
 
@@ -95,6 +186,14 @@ export default function JobDetail() {
   const [uploadChannel, setUploadChannel] = useState('')
   const [uploadPrivacy, setUploadPrivacy] = useState<'public' | 'unlisted' | 'private'>('public')
 
+  // The job stores the slug; the page should show the channel's name (WildFactBook, not
+  // "truthnevershared"). The slug is still what the API receives.
+  const channelLabel = (slug: string | null | undefined): string => {
+    if (!slug) return '—'
+    const match = (channels as Array<{ slug: string; name?: string }>).find((c) => c.slug === slug)
+    return match?.name || slug
+  }
+
   const uploadMutation = useMutation({
     mutationFn: () => jobsApi.upload({ channel_slug: uploadChannel || undefined, privacy_status: uploadPrivacy, job_id: jobId }),
     onSuccess: () => {
@@ -119,6 +218,10 @@ export default function JobDetail() {
   // shown to the user while running, and use it as a fallback for stage matching
   // so the tracker actually advances instead of staying stuck on step 1.
   const displayStep = (job?.status === 'running' && job?.message) ? job.message : currentStep
+  // Step names arrive as machine tokens ("assembling_vertical_video") from the renderers' progress
+  // callbacks; show them as words. Matching still uses the raw value.
+  const prettyStep = (step: string | undefined): string =>
+    step ? step.replace(/[_-]+/g, ' ').replace(/^\w/, (c) => c.toUpperCase()) : ''
   const activeIdx = job?.status === 'done'
     // A "done" job has all pipeline work complete. But YouTube Upload (the last
     // stage) should only be marked ✅ if there is actually a youtube_id - it's
@@ -129,7 +232,11 @@ export default function JobDetail() {
     : (() => {
         const fromStep = matchStage(currentStep)
         if (fromStep >= 0) return fromStep
-        return matchStage(job?.message)
+        const fromMessage = matchStage(job?.message)
+        if (fromMessage >= 0) return fromMessage
+        // Unknown vocabulary: fall back to how far the job says it has got, so the tracker still
+        // advances for a renderer whose step names we have not enumerated.
+        return stageFromProgress(job?.progress)
       })()
 
   const sc = statusConfig[job?.status] || statusConfig.queued
@@ -219,7 +326,7 @@ export default function JobDetail() {
                   <div className="flex items-center justify-between text-xs text-[#A3A3A3] mb-1.5">
                     <span className="flex items-center gap-1.5">
                       <Timer size={11} strokeWidth={1.5} />
-                      {displayStep || 'Processing…'}
+                      {prettyStep(displayStep) || 'Processing…'}
                     </span>
                     <div className="flex items-center gap-3">
                       {etaLabel && <span className="text-[#525252]">{etaLabel}</span>}
@@ -295,7 +402,7 @@ export default function JobDetail() {
                         </p>
                         {state === 'active' && (
                           <p className="text-xs text-[#525252] mt-0.5">
-                            {displayStep || 'In progress…'}
+                            {prettyStep(displayStep) || 'In progress…'}
                           </p>
                         )}
                         {state === 'done' && (
@@ -317,6 +424,43 @@ export default function JobDetail() {
                 })}
               </div>
             </div>
+
+            {job.youtube_id && /^\[Short\]/i.test(job.topic || '') && (
+              <JobCoverPanel jobId={job.job_id} videoId={job.youtube_id}
+                channelSlug={job.channel_slug} events={Array.isArray(job.events) ? job.events : []} />
+            )}
+
+            {/* Recent activity — non-step outcomes from the job record's `events`
+                array (written by pipeline._append_job_event, last 25 kept, and
+                returned as-is by GET /api/pipeline/jobs). These lines used to
+                reach the server console only, so a video that published without
+                a thumbnail was indistinguishable here from one that published
+                with it (§29.42). */}
+            {Array.isArray(job.events) && job.events.length > 0 && (
+              <div className="bg-white border border-[#E5E5E5] rounded-md p-6">
+                <h3 className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-5">Recent Activity</h3>
+                <ul className="space-y-2.5">
+                  {job.events.slice(-8).reverse().map((ev: any, i: number) => (
+                    <li key={`${ev.timestamp || ''}-${i}`} className="flex items-start gap-2.5">
+                      {ev.level === 'error' ? (
+                        <XCircle size={14} strokeWidth={1.5} className="text-[#BE123C] flex-shrink-0 mt-0.5" />
+                      ) : ev.level === 'warning' ? (
+                        <AlertCircle size={14} strokeWidth={1.5} className="text-[#B45309] flex-shrink-0 mt-0.5" />
+                      ) : (
+                        <CheckCircle size={14} strokeWidth={1.5} className="text-[#A3A3A3] flex-shrink-0 mt-0.5" />
+                      )}
+                      <span className={`text-[13px] leading-5 ${
+                        ev.level === 'error' ? 'text-[#BE123C]'
+                          : ev.level === 'warning' ? 'text-[#B45309]'
+                          : 'text-[#525252]'
+                      }`}>
+                        {ev.message}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {/* Error detail card - shown when job errored or was interrupted */}
             {(job.status === 'error' || job.status === 'interrupted') && job.error && (
@@ -423,7 +567,7 @@ export default function JobDetail() {
               <dl className="space-y-3">
                 {[
                   { label: 'Job ID',   value: job.job_id },
-                  { label: 'Channel',  value: job.channel_slug || '—' },
+                  { label: 'Channel',  value: channelLabel(job.channel_slug) },
                   { label: 'Progress', value: `${job.progress || 0}%` },
                   { label: 'Started',  value: job.start_time ? new Date(job.start_time).toLocaleString() : '—' },
                   { label: 'Ended',    value: job.end_time ? new Date(job.end_time).toLocaleString() : '—' },

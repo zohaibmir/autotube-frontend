@@ -1,47 +1,15 @@
-// Generates public/sitemap.xml from the static marketing routes + every blog
-// post slug in src/content/blogPosts.ts. Run automatically before build/dev
-// (see package.json "predev"/"prebuild") so the sitemap can never silently
-// drift out of sync with the actual blog content.
-import { readFileSync, writeFileSync } from 'fs'
-import { fileURLToPath } from 'url'
-import path from 'path'
+import { writeFile } from 'node:fs/promises'
+import { createServer, loadEnv } from 'vite'
+import { buildRobots, buildSitemap, resolveSiteConfig } from './site-config.mjs'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const SITE_URL = 'https://channelpilot.io'
-
-const STATIC_ROUTES = [
-  { path: '/', priority: '1.0', changefreq: 'weekly' },
-  { path: '/how-it-works', priority: '0.8', changefreq: 'monthly' },
-  { path: '/pricing', priority: '0.9', changefreq: 'monthly' },
-  { path: '/about', priority: '0.5', changefreq: 'monthly' },
-  { path: '/contact', priority: '0.4', changefreq: 'monthly' },
-  { path: '/faq', priority: '0.6', changefreq: 'monthly' },
-  { path: '/blog', priority: '0.8', changefreq: 'weekly' },
-  { path: '/tools/seo-analyzer', priority: '0.7', changefreq: 'monthly' },
-]
-
-function extractBlogSlugs() {
-  const src = readFileSync(path.join(__dirname, '..', 'src', 'content', 'blogPosts.ts'), 'utf-8')
-  const matches = [...src.matchAll(/slug:\s*'([^']+)'/g)]
-  return matches.map((m) => m[1])
+const mode = process.env.NODE_ENV === 'production' ? 'production' : 'development'
+const site = resolveSiteConfig({ ...loadEnv(mode, process.cwd(), ''), ...process.env })
+const server = await createServer({ mode, server: { middlewareMode: true, watch: null }, appType: 'custom' })
+try {
+  const { PUBLIC_PATHS } = await server.ssrLoadModule('/src/prerender.tsx')
+  await writeFile('public/sitemap.xml', buildSitemap(PUBLIC_PATHS, site))
+  await writeFile('public/robots.txt', buildRobots(site))
+  console.log(site.indexable ? `Generated sitemap for ${PUBLIC_PATHS.length} public pages.` : 'Indexing disabled: generated empty sitemap and crawlable robots.txt.')
+} finally {
+  await server.close()
 }
-
-function buildUrlEntry(loc, priority, changefreq) {
-  return `  <url>\n    <loc>${SITE_URL}${loc}</loc>\n    <changefreq>${changefreq}</changefreq>\n    <priority>${priority}</priority>\n  </url>`
-}
-
-function main() {
-  const slugs = extractBlogSlugs()
-  const entries = [
-    ...STATIC_ROUTES.map((r) => buildUrlEntry(r.path, r.priority, r.changefreq)),
-    ...slugs.map((slug) => buildUrlEntry(`/blog/${slug}`, '0.6', 'monthly')),
-  ]
-
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries.join('\n')}\n</urlset>\n`
-
-  const outPath = path.join(__dirname, '..', 'public', 'sitemap.xml')
-  writeFileSync(outPath, xml, 'utf-8')
-  console.log(`Generated sitemap.xml with ${STATIC_ROUTES.length} static routes + ${slugs.length} blog posts.`)
-}
-
-main()

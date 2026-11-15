@@ -1,0 +1,24 @@
+{
+  // The e2e specs and playwright.config.ts were in NO tsconfig at all, so
+  // `npm run type-check` never looked at them -- the same blind spot that let 87
+  // type errors sit in src/ unnoticed (Vite's build does not type-check either).
+  // This config holds them to the same strictness as the app.
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "jsx": "react-jsx"
+  },
+  "include": ["e2e", "playwright.config.ts", "playwright.seo.config.ts"]
+}

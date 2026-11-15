@@ -1,5 +1,5 @@
 import React from 'react'
-import { Outlet, Link, useNavigate } from 'react-router-dom'
+import { Outlet, useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { useCreateStore, type CreateStep } from '@store/create'
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import Navbar from '@components/Navbar'
 import Footer from '@components/Footer'
@@ -17,24 +17,24 @@ const categories = [
   {
     category: 'Content & quality',
     faqs: [
-      { q: 'Will my audience know it was AI-generated?', a: "Our quality targets are set so content is indistinguishable from manually produced videos. We always recommend following YouTube's disclosure guidelines." },
+      { q: 'Will my audience know it was AI-generated?', a: "Two separate questions. On quality, our target is a production that stands up next to a manually made video. On disclosure, the content must be labelled: YouTube requires realistic synthetic content to be flagged, and if your audience is in the EU the AI Act requires a clear disclosure. We set YouTube's 'altered or synthetic content' flag on upload by default, so that part is done for you - but keep it accurate, and add an on-screen or description note where the content is realistic." },
       { q: 'Can I customise the script before it renders?', a: "Yes. Every job has a review step where you can modify the script, change the title, or swap out visuals before rendering starts." },
-      { q: 'What languages are supported?', a: '30+ languages for voiceover, including English, Spanish, French, German, Arabic, Hindi, and Mandarin. Scripts are generated natively in your chosen language.' },
+      { q: 'What languages are supported?', a: '80+ languages for voiceover and script, including English, Spanish, Portuguese, French, German, Arabic, Hindi, Urdu, Bengali, Indonesian, Japanese, Korean, Mandarin, and Cantonese. Scripts are generated natively in your chosen language.' },
     ],
   },
   {
     category: 'Platforms & distribution',
     faqs: [
-      { q: 'Which platforms can I publish to?', a: "YouTube (long-form and Shorts), Instagram Reels, TikTok, and Facebook Reels. X and LinkedIn are coming in Q3 2026." },
+      { q: 'Which platforms can I publish to?', a: "YouTube (long-form and Shorts), Instagram Reels, TikTok, Facebook Reels, Telegram channels, and Reddit (as a link post to the subreddits you choose). X (Twitter) and Pinterest are next on the roadmap." },
       { q: 'Can I schedule when my video publishes?', a: 'Yes. Every job has a "Publish at" option - pick any future date and time and the video will upload and go public automatically.' },
-      { q: 'Can I manage multiple YouTube channels?', a: 'Yes. Free: 1 channel, Pro: 5 channels, Enterprise: unlimited - each with independent settings, voices, and branding.' },
+      { q: 'Can I manage multiple YouTube channels?', a: 'Yes. Free and Starter: 1 channel, Pro: 5 channels, Studio: 10 channels, Agency: unlimited - each with independent settings, voices, and branding.' },
     ],
   },
   {
     category: 'Billing & plans',
     faqs: [
       { q: 'Can I cancel at any time?', a: 'Yes. Cancel from billing settings in one click. You keep access until the end of your billing period. No cancellation fees.' },
-      { q: 'What happens if I exceed my video quota?', a: 'New submissions are paused when you hit your limit. You can upgrade mid-month - overage is prorated.' },
+      { q: 'What happens when I run out of credits?', a: 'You can still browse and manage your content, but new renders are paused until you upgrade or buy a credit top-up. Unused paid credits roll over for one month.' },
       { q: 'Do you offer refunds?', a: '14-day money-back guarantee on the first charge of any paid plan. Contact support within 14 days.' },
     ],
   },
@@ -47,23 +47,35 @@ const categories = [
   },
 ]
 
+// Anchor id for a category heading. Local and total, so the jump index above and
+// the section ids below cannot disagree about a category name.
+const _slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+
 function FAQItem({ q, a }: { q: string; a: string }) {
   const [open, setOpen] = useState(false)
   return (
     <div className="border-b border-gray-100 last:border-0">
       <button
-        className="w-full text-left py-4 flex items-start justify-between gap-4"
+        className="flex w-full items-start justify-between text-left"
+        style={{ gap: 16, padding: '18px 0' }}
         onClick={() => setOpen(!open)}
         aria-expanded={open}
       >
-        <span className="font-medium text-navy-600 text-sm leading-relaxed">{q}</span>
+        {/* Was 14px -- smaller than the answer it introduces. */}
+        <span className="font-semibold text-navy-600" style={{ fontSize: 15.5, lineHeight: 1.5 }}>{q}</span>
         <ChevronDown
-          size={16}
-          className={`text-gray-400 flex-shrink-0 mt-0.5 transition-transform ${open ? 'rotate-180' : ''}`}
+          size={17}
+          className={`flex-shrink-0 text-gray-500 transition-transform ${open ? 'rotate-180' : ''}`}
+          style={{ marginTop: 2 }}
         />
       </button>
       {open && (
-        <div className="pb-5 text-gray-500 text-sm leading-relaxed pr-8">{a}</div>
+        <p
+          className="text-gray-500"
+          style={{ fontSize: 14.5, lineHeight: 1.7, paddingBottom: 18, paddingRight: 34 }}
+        >
+          {a}
+        </p>
       )}
     </div>
   )
@@ -87,49 +99,109 @@ export default function FAQPage() {
       <Navbar />
       <SEO
         title="FAQ"
-        description="Answers to common questions about getting started, content quality, platforms and distribution, billing, and security and privacy on Channelpilot."
+        description="Answers to common questions about getting started, content quality, platforms and distribution, billing, and security and privacy on Vidora."
         path="/faq"
         jsonLd={faqJsonLd}
       />
 
       {/* Hero */}
-      <section className="pt-28 pb-20 px-6 border-b border-gray-100">
-        <div className="max-w-3xl mx-auto">
-          <p className="text-sky-500 font-semibold text-sm uppercase tracking-widest mb-5">FAQ</p>
-          <h1 className="text-5xl font-bold text-navy-600 leading-[1.1] mb-5">Common questions</h1>
-          <p className="text-xl text-gray-500 max-w-xl">
-            Everything you need to know before getting started.
+      <main className="flex flex-1 flex-col">
+      <section className="border-b border-gray-100">
+        <div className="site-container" style={{ paddingTop: 72, paddingBottom: 56 }}>
+          <p className="font-semibold uppercase text-sky-700" style={{ fontSize: 11, letterSpacing: '0.1em', marginBottom: 14 }}>
+            FAQ
+          </p>
+          <h1
+            className="font-bold text-navy-600"
+            style={{ fontSize: 'clamp(2.25rem, 4.6vw, 3.25rem)', lineHeight: 1.06, letterSpacing: '-0.03em' }}
+          >
+            Common questions.
+          </h1>
+          <p className="text-gray-500" style={{ fontSize: 17, lineHeight: 1.7, marginTop: 18, maxWidth: 620 }}>
+            Everything you need to know before getting started. If your question is not here, we
+            answer every message within 24 hours.
           </p>
         </div>
       </section>
 
       {/* FAQ by category */}
-      <section className="py-20 px-6">
-        <div className="max-w-3xl mx-auto space-y-14">
-          {categories.map((cat) => (
-            <div key={cat.category}>
-              <h2 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-6">{cat.category}</h2>
-              <div className="border border-gray-100 rounded-xl divide-y divide-gray-100 px-6">
-                {cat.faqs.map((item) => (
-                  <FAQItem key={item.q} q={item.q} a={item.a} />
+      <section className="border-b border-gray-100">
+        <div className="site-container" style={{ paddingTop: 56, paddingBottom: 72 }}>
+          <div className="grid grid-cols-1 lg:grid-cols-[190px_minmax(0,1fr)]" style={{ gap: '40px 56px' }}>
+            {/* Jump index. The categories sit far enough apart that scrolling to
+                find one is the main friction on a page this long. `scroll-mt-`
+                on each section clears the 64px sticky header when an anchor is
+                followed, which would otherwise hide the heading it jumped to. */}
+            <nav
+              className="hidden lg:block"
+              style={{ position: 'sticky', top: 96, alignSelf: 'start' }}
+              aria-label="FAQ sections"
+            >
+              <p
+                className="font-semibold uppercase text-gray-500"
+                style={{ fontSize: 11, letterSpacing: '0.09em', marginBottom: 12 }}
+              >
+                On this page
+              </p>
+              <ul style={{ display: 'grid', gap: 10 }}>
+                {categories.map((cat) => (
+                  <li key={cat.category}>
+                    <a
+                      href={`#${_slug(cat.category)}`}
+                      className="text-gray-600 hover:text-navy-600 transition-colors"
+                      style={{ fontSize: 13.5 }}
+                    >
+                      {cat.category}
+                    </a>
+                  </li>
                 ))}
-              </div>
+              </ul>
+            </nav>
+
+            <div style={{ display: 'grid', gap: 40 }}>
+              {categories.map((cat) => (
+                <div key={cat.category} id={_slug(cat.category)} className="scroll-mt-[88px]">
+                  {/* Was `text-sm font-bold uppercase text-gray-400` -- the same
+                      size as the answers it was labelling. */}
+                  <h2 className="font-semibold text-navy-600" style={{ fontSize: 19, marginBottom: 14 }}>
+                    {cat.category}
+                  </h2>
+                  <div className="rounded-[14px] border border-gray-200 bg-white" style={{ paddingInline: 22 }}>
+                    {cat.faqs.map((item) => (
+                      <FAQItem key={item.q} q={item.q} a={item.a} />
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
         </div>
       </section>
 
       {/* Still have questions */}
-      <section className="py-16 px-6 bg-gray-50 border-y border-gray-100">
-        <div className="max-w-3xl mx-auto flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
-          <div>
-            <h2 className="text-xl font-bold text-navy-600 mb-1">Still have questions?</h2>
-            <p className="text-gray-500 text-sm">We respond to every message within 24 hours.</p>
+      <section className="bg-navy-600">
+        <div className="site-container text-center" style={{ paddingTop: 68, paddingBottom: 68 }}>
+          <h2
+            className="font-bold text-white"
+            style={{ fontSize: 'clamp(1.6rem, 2.8vw, 2.05rem)', lineHeight: 1.15, letterSpacing: '-0.025em' }}
+          >
+            Still have questions?
+          </h2>
+          <p className="text-sky-200" style={{ fontSize: 16.5, lineHeight: 1.6, marginTop: 12 }}>
+            We answer every message within 24 hours.
+          </p>
+          <div className="flex flex-col sm:flex-row justify-center" style={{ gap: 12, marginTop: 24 }}>
+            <Link to="/contact" className="btn-primary btn-lg btn-inverse">
+              Contact us
+            </Link>
+            <Link to="/signup" className="btn-secondary btn-lg btn-outline-inverse">
+              Start free
+            </Link>
           </div>
-          <Link to="/contact" className="btn-secondary whitespace-nowrap">Contact us</Link>
         </div>
       </section>
 
+      </main>
       <Footer />
     </div>
   )

@@ -4,6 +4,10 @@
     "useDefineForClassFields": true,
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
+    // Without this, `module: "ESNext"` defaults moduleResolution to "classic",
+    // which then rejects resolveJsonModule (TS5070). "bundler" is the correct
+    // setting for Vite and matches tsconfig.node.json.
+    "moduleResolution": "bundler",
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,

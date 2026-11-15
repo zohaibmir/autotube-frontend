@@ -63,6 +63,14 @@ async function apiPost(path: string, data: object) {
   return { status: resp.status(), body }
 }
 
+async function apiPut(path: string, data: object) {
+  const ctx  = await request.newContext({ baseURL: API })
+  const resp = await ctx.put(path, { headers: HEADERS, data })
+  const body = await resp.json()
+  await ctx.dispose()
+  return { status: resp.status(), body }
+}
+
 // ── AUTH ──────────────────────────────────────────────────────────────────────
 test.describe('Auth endpoints', () => {
   test('GET /api/auth/me → 200 with user_id', async () => {
@@ -120,6 +128,11 @@ test.describe('Channel endpoints', () => {
 // ── QUEUE ─────────────────────────────────────────────────────────────────────
 test.describe('Queue endpoints', () => {
   let addedId: number | null = null
+  // The exact topic this run added. The two tests below identify it by this string, not by a shared
+  // prefix: matching `startsWith('API test topic')` and deleting only the first hit meant a run that
+  // failed part-way left its row behind, the next run consumed the leftover, and rows accumulated in
+  // the shared queue -- where a topic that is due can be claimed by the scheduler and rendered.
+  let addedTopic: string | null = null
 
   test('GET /api/queue/pending → 200 with items', async () => {
     const { status, body } = await apiGet('/api/queue/pending')
@@ -129,16 +142,18 @@ test.describe('Queue endpoints', () => {
 
   test('POST /api/queue/add → 200 creates item', async () => {
     test.skip(!target, WRITE_SKIP)
+    addedTopic = `API test topic ${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const { status } = await apiPost('/api/queue/add', {
-      topic: `API test topic ${Date.now()}`,
+      topic: addedTopic,
       channel_slug: null,
     })
     expect(status).toBe(200)
-    // Get the new item's ID for cleanup
+    // Get the new item's ID for cleanup — matching THIS run's topic exactly.
     const list = await apiGet('/api/queue/pending')
-    const item = list.body.items?.find((i: any) =>
-      i.topic.startsWith('API test topic')
-    )
+    const item = list.body.items?.find((i: any) => i.topic === addedTopic)
+    // Asserted, not `if (item)`: the DELETE test below is a no-op without this id, so a silent miss
+    // here would leave a row in the shared queue with the cleanup test still reporting green.
+    expect(item, `the topic this run added is not in the queue: ${addedTopic}`).toBeTruthy()
     if (item) addedId = item.id
   })
 
@@ -163,7 +178,14 @@ test.describe('Pipeline endpoints', () => {
   test('GET /api/pipeline/status → 200', async () => {
     const { status, body } = await apiGet('/api/pipeline/status')
     expect(status).toBe(200)
-    expect(['idle', 'running', 'locked']).toContain(body.status)
+    // The vocabulary `server.py` documents on its own initial declarations:
+    //   idle | running | ready | uploading | done | failed
+    //
+    // The list here used to be `['idle', 'running', 'locked']`. `locked` has never been a pipeline
+    // status, and every terminal one was missing — so this passed only while no render had ever
+    // finished, and failed the moment one reached `ready` (which is the normal state a creator is in
+    // right after a video renders). Pin the real set, so a genuinely unknown value still fails.
+    expect(['idle', 'running', 'ready', 'uploading', 'done', 'failed']).toContain(body.status)
   })
 
   test('GET /api/pipeline/lock-status → 200', async () => {
@@ -268,29 +290,35 @@ test.describe('Voices endpoint', () => {
 
 // ── BRAND KIT ─────────────────────────────────────────────────────────────────
 test.describe('Brand Kit endpoints', () => {
+  // Contract: GET and PUT /api/brand-kit both return a *flat* BrandKit
+  // (channel_slug, avatar_url, ...) — the exact shape `brandKitApi` in services.ts
+  // consumes. There is no { ok, brand_kit } wrapper, and the route is PUT, not POST.
+  // `demo` resolves for an admin because resolve_owned_channel leaves admins unrestricted.
   test('GET /api/brand-kit?channel=demo → 200 with BrandKit', async () => {
-    const { status, body } = await apiGet('/api/brand-kit?channel=demo')
+    const { status, body } = await apiGet('/api/brand-kit', { channel: 'demo' })
     expect(status).toBe(200)
-    expect(body.ok).toBe(true)
-    expect(body.brand_kit).toBeDefined()
+    expect(body.channel_slug).toBe('demo')
+    expect(body).toHaveProperty('avatar_url')
   })
 
   test('PUT /api/brand-kit with channel → 200 with updated BrandKit', async () => {
-    const { status, body } = await apiPost('/api/brand-kit', {
+    test.skip(!target, WRITE_SKIP)   // upserts a real row
+    const { status, body } = await apiPut('/api/brand-kit', {
       channel: 'demo',
       avatar_url: 'https://example.com/avatar.png',
     })
     expect(status).toBe(200)
-    expect(body.ok).toBe(true)
-    expect(body.brand_kit).toBeDefined()
+    expect(body.channel_slug).toBe('demo')
+    expect(body.avatar_url).toBe('https://example.com/avatar.png')
   })
 
   test('PUT /api/brand-kit with missing channel → 400', async () => {
-    const { status, body } = await apiPost('/api/brand-kit', {
+    // Refused before any write, so this one stays ungated.
+    const { status, body } = await apiPut('/api/brand-kit', {
       avatar_url: 'https://example.com/avatar.png',
     })
     expect(status).toBe(400)
-    expect(body.ok).toBe(false)
+    expect(body.detail).toBe('channel is required')
   })
 })
 

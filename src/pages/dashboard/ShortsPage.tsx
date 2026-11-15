@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import {
   Clapperboard, Sparkles, Play, Loader2, Plus, Trash2,
   Youtube, Globe, Share2, RefreshCw, CheckCircle2, XCircle,
@@ -8,12 +9,16 @@ import {
 import { useChannels } from '@hooks/useJobs'
 import {
   shortsApi,
+  youtubeApi,
   type ShortsScenePrompt,
   type ShortsAnimatedJob,
   type ShortsScriptJob,
   type ShortsLibraryItem,
 } from '@api/services'
 import { useToast } from '@components/Toast'
+import ShortsDurationSelect, { useShortsDuration } from '@components/ShortsDurationSelect'
+import { apiErrorMessage } from '@lib/apiError'
+import { composeThumbnail, DEFAULT_OVERLAY_STYLE } from '@lib/thumbnailOverlay'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -31,16 +36,6 @@ const PLATFORM_OPTIONS = [
 ]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  const m = Math.floor(diff / 60000)
-  if (m < 1) return 'just now'
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
 
 function ProgressBar({ pct, phase }: { pct: number; phase: string }) {
   return (
@@ -286,6 +281,8 @@ function ScriptMode({ channels }: { channels: Array<{ slug: string; name?: strin
   const toast = useToast()
 
   const [channel,  setChannel]  = useState('')
+  const [duration, setDuration] = useState<number | null>(null)
+  const shortDuration = useShortsDuration(channel, duration)
   const [topic,    setTopic]    = useState('')
   const [script,   setScript]   = useState('')
   const [voice,    setVoice]    = useState('')
@@ -296,14 +293,52 @@ function ScriptMode({ channels }: { channels: Array<{ slug: string; name?: strin
   const [seoTags,  setSeoTags]  = useState('')
   const [busy,     setBusy]     = useState(false)
   const [job,      setJob]      = useState<ShortsScriptJob | null>(null)
+  const [privacy, setPrivacy] = useState<'private' | 'unlisted' | 'public'>('private')
+  const [approved, setApproved] = useState(false)
+  const [coverText, setCoverText] = useState('')
+  const [coverBackground, setCoverBackground] = useState<string | null>(null)
+  const [cover, setCover] = useState<string | null>(null)
+  const [coverError, setCoverError] = useState<string | null>(null)
+  const [retryingCover, setRetryingCover] = useState(false)
+  const [captionsEnabled, setCaptionsEnabled] = useState(true)
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => { setApproved(false) }, [channel, topic, script, cover, coverText, seoTitle, seoDsc, seoTags, voice, language, captionsEnabled, duration])
+
+  useEffect(() => {
+    let cancelled = false
+    setCover(null)
+    setCoverError(null)
+    if (coverBackground) {
+      composeThumbnail(coverBackground, { ...DEFAULT_OVERLAY_STYLE, text: coverText || topic },
+        { w: 1080, h: 1920 })
+        .then(image => { if (!cancelled) setCover(image) })
+        .catch((error: unknown) => {
+          if (!cancelled) setCoverError(error instanceof Error ? error.message : 'Cover composition failed')
+        })
+    }
+    return () => { cancelled = true }
+  }, [coverBackground, coverText, topic])
+
+  const retryCover = async () => {
+    if (!job?.youtube_id || !job.thumbnail_data_url) return
+    setRetryingCover(true)
+    try {
+      const result = await youtubeApi.setThumbnail(job.youtube_id, job.thumbnail_data_url, job.channel_slug, job.job_id)
+      setJob(current => current ? { ...current, thumbnail: { ok: true, detail: result.message } } : current)
+      toast.success(result.message)
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Cover retry failed'))
+    } finally { setRetryingCover(false) }
+  }
 
   const startPolling = useCallback(() => {
     const poll = async () => {
       try {
         const data = await shortsApi.scriptStatus()
-        setJob(data)
+        setJob(data.status === 'idle' ? null : data)
         if (data.status === 'running') {
+          setBusy(true)
           pollRef.current = setTimeout(poll, 2500)
         } else {
           setBusy(false)
@@ -313,10 +348,15 @@ function ScriptMode({ channels }: { channels: Array<{ slug: string; name?: strin
     poll()
   }, [])
 
-  useEffect(() => () => { if (pollRef.current) clearTimeout(pollRef.current) }, [])
+  useEffect(() => {
+    startPolling()
+    return () => { if (pollRef.current) clearTimeout(pollRef.current) }
+  }, [startPolling])
 
   const handleBuild = async () => {
     if (!topic.trim() || !script.trim()) { toast.error('Topic and script are required'); return }
+    if (privacy === 'public' && !approved) { toast.error('Confirm public publication first'); return }
+    if (coverBackground && !cover) { toast.error('Wait for a valid cover preview'); return }
     setBusy(true)
     setJob(null)
     try {
@@ -329,6 +369,14 @@ function ScriptMode({ channels }: { channels: Array<{ slug: string; name?: strin
         seoTitle: seoTitle || undefined,
         seoDescription: seoDsc || undefined,
         seoTags: seoTags || undefined,
+        privacy_status: privacy,
+        publish_approved: approved,
+        thumbDataUrl: cover || undefined,
+        thumbnail_text: coverText || undefined,
+        visualSource: 'stock',
+        tts_provider: 'edge',
+        captions_enabled: captionsEnabled,
+        duration_seconds: shortDuration.seconds,
       })
       if (res.ok) {
         toast.success('Short build started')
@@ -337,7 +385,7 @@ function ScriptMode({ channels }: { channels: Array<{ slug: string; name?: strin
         toast.error('Failed to start build')
         setBusy(false)
       }
-    } catch { toast.error('Failed to start build'); setBusy(false) }
+    } catch (error) { toast.error(apiErrorMessage(error, 'Failed to start build')); setBusy(false) }
   }
 
   return (
@@ -348,12 +396,18 @@ function ScriptMode({ channels }: { channels: Array<{ slug: string; name?: strin
           <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Channel</label>
           <select
             value={channel}
-            onChange={e => setChannel(e.target.value)}
+            onChange={e => { setChannel(e.target.value); setDuration(null) }}
             className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors"
           >
-            <option value="">Any channel</option>
+            <option value="">Default channel</option>
             {channels.map(ch => <option key={ch.slug} value={ch.slug}>{ch.name || ch.slug}</option>)}
           </select>
+          {/* "Any channel" was misleading: the upload always resolves to exactly one channel, and when a
+              Short landed on the wrong one there was nothing on screen saying which it would be. */}
+          <p className="text-[10px] text-[#A3A3A3] mt-1">
+            Leave on Default to upload to your default channel. Choose one to be explicit — this is the
+            channel the Short will be published to.
+          </p>
         </div>
         <div>
           <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Voice ID <span className="font-normal normal-case tracking-normal">(optional)</span></label>
@@ -375,6 +429,9 @@ function ScriptMode({ channels }: { channels: Array<{ slug: string; name?: strin
         </div>
       </div>
 
+      <ShortsDurationSelect value={duration} onChange={setDuration} channelDefault={shortDuration.channelDefault} />
+      {shortDuration.error && <p role="alert" className="text-xs text-red-600">Could not load the channel default. Retry or select an explicit length.</p>}
+
       {/* Topic */}
       <div>
         <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Topic <span className="text-[#DC2626]">*</span></label>
@@ -390,20 +447,22 @@ function ScriptMode({ channels }: { channels: Array<{ slug: string; name?: strin
       <div>
         <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">
           Script <span className="text-[#DC2626]">*</span>
-          <span className="ml-2 font-normal normal-case tracking-normal text-[#A3A3A3]">Keep under 300 words for a 60s Short</span>
+          <span className="ml-2 font-normal normal-case tracking-normal text-[#A3A3A3]">
+            Aim for {Math.ceil(shortDuration.seconds * .85 * 140 / 60)}-{Math.floor(Math.min(180, shortDuration.seconds * 1.15) * 140 / 60)} English words; target {shortDuration.seconds}s
+          </span>
         </label>
         <textarea
           value={script}
           onChange={e => setScript(e.target.value)}
-          placeholder="Write or paste your Short's script here…&#10;&#10;Hook: Start with a bold statement or question.&#10;Body: Deliver 2-3 punchy facts or steps.&#10;CTA: End with 'Like & subscribe for more!'"
+          placeholder="Hook: One specific, truthful surprise.&#10;Context: What the viewer needs to know.&#10;Explanation: Show why it happens.&#10;Payoff: Deliver the answer.&#10;Callback: Connect naturally to the opening."
           rows={8}
           className="w-full px-3 py-2.5 text-[13px] border border-[#E5E5E5] rounded focus:outline-none focus:ring-1 focus:ring-[#0A0A0A] transition-colors resize-none placeholder:text-[#D4D4D4]"
         />
         <p className="text-[10px] text-[#A3A3A3] mt-1">
-          <span style={{ color: script.split(/\s+/).filter(Boolean).length > 300 ? '#DC2626' : '#A3A3A3' }}>
+          <span>
             {script.split(/\s+/).filter(Boolean).length} words
           </span>
-          {' '}· ~{Math.round(script.split(/\s+/).filter(Boolean).length / 2.5)}s spoken
+          {' '}· ~{Math.round(script.split(/\s+/).filter(Boolean).length * 60 / 140)}s spoken (estimate)
         </p>
       </div>
 
@@ -434,15 +493,60 @@ function ScriptMode({ channels }: { channels: Array<{ slug: string; name?: strin
         )}
       </div>
 
+      <div className="border border-[#E5E5E5] rounded-lg p-4 space-y-3">
+        <label className="block text-xs">
+          Portrait cover headline (ideally 2–5 words)
+          <input aria-label="Cover headline" value={coverText} maxLength={120}
+            onChange={e => setCoverText(e.target.value)}
+            placeholder="e.g. THREE HEARTS?"
+            className="block w-full border rounded p-2 mt-1" />
+        </label>
+        <label className="block text-xs">
+          Optional cover background (JPEG/PNG)
+          <input type="file" accept="image/jpeg,image/png" className="block mt-1"
+            onChange={e => {
+              const file = e.target.files?.[0]
+              if (!file) return
+              if (file.size > 6_000_000) { toast.error('Choose an image under 6 MB'); return }
+              const reader = new FileReader()
+              reader.onload = () => { if (typeof reader.result === 'string') setCoverBackground(reader.result) }
+              reader.onerror = () => toast.error('Could not read the cover image')
+              reader.readAsDataURL(file)
+            }} />
+        </label>
+        {cover && <img src={cover} alt="9:16 cover preview" className="w-36 aspect-[9/16] object-cover rounded" />}
+        {coverError && <p className="text-xs text-red-600">{coverError}</p>}
+        <p className="text-xs text-[#737373]">Without an image, a portrait cover is composed from the video. Stock visuals and free Edge narration are used. YouTube can crop covers differently by surface.</p>
+        <label className="block text-xs">
+          <input type="checkbox" checked={captionsEnabled} onChange={e => setCaptionsEnabled(e.target.checked)} />
+          {' '}Burn in captions
+        </label>
+        <label className="block text-xs">
+          Upload visibility
+          <select aria-label="Upload visibility" value={privacy}
+            onChange={e => { setPrivacy(e.target.value as typeof privacy); setApproved(false) }}
+            className="block border rounded p-2 mt-1">
+            <option value="private">Private — review before publishing</option>
+            <option value="unlisted">Unlisted — anyone with the link</option>
+            <option value="public">Public — publish immediately</option>
+          </select>
+        </label>
+        {privacy === 'public' && <label className="block text-xs">
+          <input type="checkbox" checked={approved} onChange={e => setApproved(e.target.checked)} />
+          {' '}I reviewed this script and cover and approve public publication.
+        </label>}
+        <p className="text-xs text-[#737373]">No subscriber notifications or social cross-posting. Private uploads stay private until you publish them in YouTube Studio.</p>
+      </div>
+
       {/* Build button */}
       <button
         onClick={handleBuild}
-        disabled={busy || !topic.trim() || !script.trim()}
+        disabled={busy || shortDuration.loading || !!shortDuration.error || !topic.trim() || !script.trim() || (privacy === 'public' && !approved) || (!!coverBackground && !cover)}
         className="h-9 px-5 text-[13px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] transition-colors disabled:opacity-40 flex items-center gap-2"
       >
         {busy
           ? <><Loader2 size={13} strokeWidth={1.5} className="animate-spin" /> Building…</>
-          : <><Play size={13} strokeWidth={1.5} /> Build &amp; Upload Short</>
+          : <><Play size={13} strokeWidth={1.5} /> Build &amp; Upload {privacy} Short</>
         }
       </button>
 
@@ -465,6 +569,19 @@ function ScriptMode({ channels }: { channels: Array<{ slug: string; name?: strin
             )}
           </div>
           {job.message && <p className="text-[12px] text-[#525252]">{job.message}</p>}
+          {job.measured_duration_seconds != null && <p className="text-xs">
+            Actual: {job.measured_duration_seconds.toFixed(1)}s / target: {job.duration_seconds}s
+          </p>}
+          {job.thumbnail_data_url && <img src={job.thumbnail_data_url} alt="Uploaded portrait cover" className="w-36 aspect-[9/16] object-cover rounded" />}
+          {job.thumbnail && <div className="text-xs space-y-2">
+            <p>{job.thumbnail.ok ? 'Cover accepted by YouTube; check its displayed crop on YouTube.' :
+              `Cover not applied: ${job.thumbnail.detail || job.thumbnail.reason}`}</p>
+            {!job.thumbnail.ok && job.thumbnail_data_url && job.youtube_id && (
+              <button onClick={retryCover} disabled={retryingCover} className="border rounded px-3 py-1 disabled:opacity-40">
+                {retryingCover ? 'Retrying cover…' : 'Retry cover only — do not re-upload video'}
+              </button>
+            )}
+          </div>}
           {job.error && <p className="text-[11px] text-[#BE123C]">{job.error}</p>}
           {job.status === 'running' && (
             <div className="flex items-center gap-2 text-[11px] text-[#A3A3A3]">
@@ -494,6 +611,19 @@ function AnimatedMode() {
   const [generatingScenes, setGeneratingScenes] = useState(false)
   const [generatingClips,  setGeneratingClips]  = useState(false)
   const [activeJobs,   setActiveJobs]   = useState<string[]>([])
+  // The queue's Run button starts a Shorts job and then navigates here. This page only knew about jobs
+  // started on this page (activeJobs is local state), so that navigation landed on an empty studio with
+  // the run invisible. `/app/shorts?job=<id>` now hands the job over and the progress strip renders.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    const jobId = searchParams.get('job')
+    if (!jobId) return
+    setActiveJobs(j => (j.includes(jobId) ? j : [...j, jobId]))
+    // Drop the param, otherwise a refresh or a mode switch resurrects a job that has already finished.
+    const next = new URLSearchParams(searchParams)
+    next.delete('job')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
 
   const togglePlatform = (p: string) =>
     setPlatforms(ps => ps.includes(p) ? ps.filter(x => x !== p) : [...ps, p])
@@ -528,7 +658,12 @@ function AnimatedMode() {
       } else {
         toast.error('Failed to start generation')
       }
-    } catch { toast.error('Failed to start generation') }
+    } catch (e) {
+      // Surface the backend's own sentence. The 409 here is "You already have a video rendering —
+      // wait for it to finish or cancel it first.", which is the difference between the user
+      // understanding the refusal and reading it as a bug. A generic toast hid exactly that.
+      toast.error(apiErrorMessage(e, 'Failed to start generation'))
+    }
     finally { setGeneratingClips(false) }
   }
 

@@ -1,5 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { jobsApi, channelsApi, queueApi, byokApi } from '@api/services'
+import { apiErrorMessage } from '@lib/apiError'
+import { useToast } from '@components/Toast'
 
 // ── Jobs list (JobsList + DashboardHome) ─────────────────────────────────────
 export function useJobs(params?: { search?: string; status?: string }) {
@@ -40,24 +42,48 @@ export function usePipelineStatus() {
   })
 }
 
-// ── Job action (cancel / retry) ─────────────────────────────────────────────
+// ── Job action (cancel / retry / resume) ────────────────────────────────────
 export function useJobAction() {
   const queryClient = useQueryClient()
+  const toast = useToast()
   return useMutation({
     mutationFn: ({ jobId, action }: { jobId: string; action: 'cancel' | 'retry' | 'resume-from-merge' }) =>
       jobsApi.action(jobId, action),
-    onSuccess: () => {
+    onSuccess: (
+      res: { ok?: boolean; message?: string | null } | undefined,
+      variables: { jobId: string; action: 'cancel' | 'retry' | 'resume-from-merge' },
+    ) => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
       queryClient.invalidateQueries({ queryKey: ['pipeline'] })
+      // The backend explains what it actually did. For long-form, a "resume" is a rerun because
+      // checkpoints do not exist there, and saying so beats a success that means something other
+      // than what the button implied.
+      if (res?.message) {
+        toast.info(res.message)
+      } else if (variables.action === 'resume-from-merge') {
+        toast.success('Resumed')
+      } else if (variables.action === 'retry') {
+        toast.success('Restarted from the beginning')
+      } else {
+        toast.success('Cancel requested')
+      }
+    },
+    onError: (err: unknown) => {
+      // This had no onError at all, so a failed action was silent -- and every long-form retry
+      // failed with a 500, which is why the buttons looked like they did nothing.
+      toast.error(apiErrorMessage(err, 'That action failed'))
     },
   })
 }
 
 // ── Channels (NewJob Step 1 + Channels page) ─────────────────────────────────
-export function useChannels() {
+export function useChannels(all = false) {
   return useQuery({
-    queryKey: ['channels'],
-    queryFn: () => channelsApi.list(),
+    // Keyed by scope so the two views never share a cache entry. Invalidations elsewhere use the
+    // ['channels'] prefix, which matches both variants -- that is deliberate, so a mutation refreshes
+    // whichever view is on screen.
+    queryKey: ['channels', { all }],
+    queryFn: () => channelsApi.list(all),
     staleTime: 60_000,
   })
 }

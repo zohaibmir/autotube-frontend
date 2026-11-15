@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronRight, Copy, CheckCheck, Loader2, RefreshCw, X, Plus } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
@@ -60,42 +60,20 @@ export default function SeoPage() {
   }
 
   const generateMutation = useMutation({
+    // No offline fallback, deliberately -- the full reasoning is in SeoGeneratorPage. It used to
+    // return a fabricated package (invented titles, description, tags, and an `uploadTimingHint`
+    // about the viewer's best upload windows) whenever the request produced no HTTP response at all.
+    // Nothing labelled it, and the creator's very next step is to paste it into YouTube.
     mutationFn: async () => {
-      try {
-        const data = await aiApi.seo({
-          topic:    selectedTopic?.topic ?? '',
-          script:   scriptContent || undefined,
-          region:   region !== 'Global' ? region : undefined,
-          category,
-        })
-        return data as SeoResult
-      } catch (err: any) {
-        // Only fall back to a mock SEO result for genuine network/wiring
-        // failures - a real HTTP error response (e.g. 402 missing BYOK key)
-        // is re-thrown so the user sees what actually happened.
-        if (err?.response) throw err
-        const topic = selectedTopic?.topic ?? 'Your Video Topic'
-        return {
-          titles: [
-            `${topic} (The Complete Guide)`,
-            `I Tried ${topic} for 30 Days - Here's What Happened`,
-            `Why Most People Get ${topic} Wrong`,
-          ],
-          selectedTitle: `${topic} (The Complete Guide)`,
-          description:  `In this video, we explore ${topic} in depth - covering everything from the fundamentals to advanced strategies you can use today.\n\nWhether you're a complete beginner or looking to level up, this guide has you covered.\n\n📌 Chapters below\n⬇️ Subscribe for weekly content`,
-          tags:         [topic.split(' ')[0], 'YouTube', 'Tutorial', 'HowTo', 'Guide', '2026', region !== 'Global' ? region : '', category].filter(Boolean),
-          uploadTimingHint: 'Best upload windows: Tuesday 2–4 PM or Friday 12–2 PM (your audience timezone)',
-          chapters: [
-            { time: '0:00', label: 'Intro' },
-            { time: '1:30', label: 'The Core Problem' },
-            { time: '5:00', label: 'The Framework' },
-            { time: '12:00', label: 'Real Examples' },
-            { time: '18:30', label: 'Action Steps' },
-            { time: '22:00', label: 'Outro' },
-          ],
-        } satisfies SeoResult
-      }
+      const data = await aiApi.seo({
+        topic:    selectedTopic?.topic ?? '',
+        script:   scriptContent || undefined,
+        region:   region !== 'Global' ? region : undefined,
+        category,
+      })
+      return data as SeoResult
     },
+
     onSuccess: (data) => {
       setResult(data)
     },

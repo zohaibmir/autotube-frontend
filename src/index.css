@@ -1,4 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap');
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/lora';
 
 @tailwind base;
 @tailwind components;
@@ -9,7 +10,7 @@
    heavier than 1px border. Color used sparingly for emphasis only.
    ───────────────────────────────────────────────────────────────────────── */
 :root {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'Inter Variable', system-ui, -apple-system, sans-serif;
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -43,6 +44,8 @@
 html, body { margin: 0; padding: 0; overflow-x: hidden; }
 *, *::before, *::after { box-sizing: border-box; }
 
+html[data-consent-decided] [data-consent-banner] { display: none; }
+
 /* ── Accessibility ───────────────────────────────────────────────────────────
    WCAG 2.1 AA compliance layer. Applied globally so individual components
    don't need to manage focus styles — the browser's default outline is
@@ -56,13 +59,11 @@ html, body { margin: 0; padding: 0; overflow-x: hidden; }
   border-radius: 4px;
 }
 
-/* Inputs/selects/textareas use border-change as focus indicator — keep outline hidden
-   but add a subtle ring so keyboard users still see it on non-border elements */
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-  outline: none;
-  /* border focus is set per-component with focus:border-[#0A0A0A] */
+:root input:focus-visible,
+:root select:focus-visible,
+:root textarea:focus-visible {
+  outline: 2px solid #0A0A0A;
+  outline-offset: 2px;
 }
 
 /* Remove default outline for mouse/touch users (focus, not focus-visible) */
@@ -169,21 +170,95 @@ textarea:focus-visible {
            bg-white transition-colors;
   }
 
-  /* Buttons */
+  /* ── Buttons ────────────────────────────────────────────────────────────
+     Explicit values rather than spacing utilities. `theme.extend.spacing`
+     doubles keys 0-16, so the previous `px-6 py-2.5` emitted 48px of horizontal
+     padding against 10px of vertical: every CTA on the marketing pages was a
+     wide, squat pill. These two classes are used only by the static pages (the
+     dashboard styles its own controls), so they can be corrected without
+     re-laying-out the app. */
   .btn-primary {
-    @apply bg-navy-600 hover:bg-navy-700 text-white px-6 py-2.5
-           rounded-lg font-semibold text-sm transition-colors inline-flex
-           items-center gap-2 disabled:opacity-40;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 12px 20px; border-radius: 10px;
+    background-color: #1A3A52; color: #FFFFFF;
+    font-size: 15px; font-weight: 600; line-height: 1.2; white-space: nowrap;
+    transition: background-color 150ms ease;
   }
+  .btn-primary:hover { background-color: #152D41; }
+  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* Header-size variant of the primary button (same colours, tighter box). */
+  .btn-primary-sm { padding: 9px 16px; font-size: 14px; border-radius: 9px; }
+
+  /* Hero-size variant, for the one or two primary CTAs above the fold. */
+  .btn-lg { padding: 14px 24px; font-size: 16px; border-radius: 11px; }
+
+  /* Inversions for the navy CTA band. Declared after .btn-primary/.btn-secondary
+     so they win within the same layer. */
+  .btn-inverse { background-color: #FFFFFF; color: #1A3A52; }
+  .btn-inverse:hover { background-color: #EEF3F7; }
+  .btn-outline-inverse {
+    background-color: transparent; color: #FFFFFF;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+  }
+  .btn-outline-inverse:hover {
+    background-color: rgba(255, 255, 255, 0.10);
+    border-color: rgba(255, 255, 255, 0.55);
+  }
+
+  /* The global focus ring is near-black (#0A0A0A), which measures about 1.1:1 on
+     navy-600 and navy-700 -- invisible exactly where a keyboard user is tabbing
+     through the closing CTA band and the footer. White measures 14:1 there. */
+  .btn-inverse:focus-visible,
+  .btn-outline-inverse:focus-visible,
+  .site-footer-link:focus-visible {
+    outline-color: #FFFFFF;
+  }
+
   .btn-secondary {
-    @apply border border-navy-600 text-navy-600 hover:bg-navy-50 px-6 py-2.5
-           rounded-lg font-semibold text-sm transition-colors inline-flex
-           items-center gap-2;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 12px 20px; border-radius: 10px;
+    border: 1px solid #D1D5DB; background-color: #FFFFFF; color: #1A3A52;
+    font-size: 15px; font-weight: 600; line-height: 1.2; white-space: nowrap;
+    transition: background-color 150ms ease, border-color 150ms ease;
   }
-  .btn-ghost {
-    @apply text-navy-600 hover:bg-gray-100 px-4 py-2 rounded-lg
-           font-medium text-sm transition-colors inline-flex items-center gap-2;
+  .btn-secondary:hover { background-color: #F0F4F8; border-color: #A4BAD0; }
+
+  /* ── Marketing chrome ───────────────────────────────────────────────────
+     The static pages were authored with ordinary Tailwind numbers, but the
+     doubled spacing scale made them render about twice the intended size -- a
+     128px header (`h-16`), a 56px logo tile (`w-7`), 48px gutters (`px-6`).
+     Fixing the shared scale would re-lay-out the dashboard, which is tuned to
+     the doubled values, so the marketing surface declares its own rhythm here
+     with explicit pixels. */
+  .site-container {
+    width: 100%; max-width: 1120px; margin-inline: auto; padding-inline: 24px;
   }
+
+  .site-nav-link {
+    display: inline-flex; align-items: center;
+    padding: 8px 12px; border-radius: 8px;
+    font-size: 14px; font-weight: 500; color: #4B5563; white-space: nowrap;
+    transition: color 150ms ease, background-color 150ms ease;
+  }
+  .site-nav-link:hover { color: #1A3A52; background-color: #F4F6F8; }
+  .site-nav-link[aria-current='page'] { color: #1A3A52; font-weight: 600; }
+
+  .site-footer-heading {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.09em;
+    text-transform: uppercase; color: #85BFE8; margin-bottom: 6px;
+  }
+
+  /* Secondary navigation still has to be tappable: 40px rows on touch widths,
+     and 28px once a pointer can be assumed, which is when a 40px row reads as
+     loose. Contrast on navy-700 is 10.2:1 for the links and 7.2:1 for the
+     headings above them. */
+  .site-footer-link {
+    display: inline-flex; align-items: center; min-height: 40px;
+    font-size: 14px; color: #C2DFF0; transition: color 150ms ease;
+  }
+  .site-footer-link:hover { color: #FFFFFF; }
+  @media (min-width: 1024px) { .site-footer-link { min-height: 28px; } }
 
   /* Badge */
   .badge {

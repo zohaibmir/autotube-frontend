@@ -1,16 +1,41 @@
 import React, { useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import {
   ChevronLeft, RefreshCw, Loader2, ExternalLink, CheckCircle2,
   XCircle, AlertCircle, Wand2, Wrench, Video, BarChart2, KeyRound, ShieldCheck,
-  ImageIcon, Film, Upload, Search, Sparkles, Type,
+  ImageIcon, Film, Upload, Search, Sparkles, Type, Languages, Trash2, RotateCcw,
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useChannels } from '@hooks/useJobs'
-import { channelOpsApi, analyticsApi, channelsApi, brandingApi, channelProfilesApi } from '@api/services'
+import {
+  channelOpsApi, analyticsApi, channelsApi, brandingApi, channelProfilesApi, voiceApi,
+} from '@api/services'
 import { useToast } from '@components/Toast'
+import { apiErrorMessage } from '@lib/apiError'
+import { openOAuthPopup } from '@lib/oauthPopup'
+import { CTR_COLUMN_NOTE, ctrAsOf, ctrTooltip, fmtCtr } from '@lib/ctrReading'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// The subset of YouTube's category list a creator actually picks between. Ids are the API's lookup keys —
+// the name is only a label — so the id is what gets stored. "Platform default" is an explicit option
+// rather than a hidden fallback.
+const _YT_CATEGORIES = [
+  { id: '24', label: 'Entertainment' },
+  { id: '27', label: 'Education' },
+  { id: '28', label: 'Science & Technology' },
+  { id: '15', label: 'Pets & Animals' },
+  { id: '22', label: 'People & Blogs' },
+  { id: '23', label: 'Comedy' },
+  { id: '10', label: 'Music' },
+  { id: '20', label: 'Gaming' },
+  { id: '26', label: 'Howto & Style' },
+  { id: '1', label: 'Film & Animation' },
+  { id: '17', label: 'Sports' },
+  { id: '19', label: 'Travel & Events' },
+  { id: '29', label: 'Nonprofits & Activism' },
+  { id: '25', label: 'News & Politics' },
+]
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -25,6 +50,9 @@ function SectionCard({ title, children }: { title: string; children: React.React
 
 // ─── Video Defaults panel (per-channel visual source / art style / captions) ──
 
+// "english" -> "English". The API returns canonical lowercase keys.
+const _langLabel = (id: string) => id.charAt(0).toUpperCase() + id.slice(1)
+
 const _ART_STYLE_OPTIONS = [
   { id: 'anime',          label: 'Anime Dream',      bestFor: 'anime, fantasy & action' },
   { id: 'comic',          label: 'Comic Pop',        bestFor: 'bold storytelling & drama' },
@@ -38,22 +66,73 @@ function VideoDefaultsPanel({ slug }: { slug: string }) {
   const toast = useToast()
   const queryClient = useQueryClient()
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error: profileError } = useQuery({
     queryKey: ['channel-profile', slug],
     queryFn: () => channelProfilesApi.get(slug),
     staleTime: 30_000,
   })
   const profile = data?.profile ?? {}
 
+  // YouTube's own category list for the channel's region, not a hand-written one — the assignable list
+  // differs by region, and this dropdown is what decides where future uploads are filed.
+  const { data: categoryData } = useQuery({
+    queryKey: ['video-categories', slug],
+    queryFn: () => channelOpsApi.videoCategories(slug),
+    staleTime: 60 * 60 * 1000,
+  })
+  const ytCategories = categoryData?.categories
+    ?? _YT_CATEGORIES.map((c) => ({ id: c.id, title: c.label }))
+
   const [visualSource, setVisualSource] = useState<string>('stock')
   const [artStyle, setArtStyle] = useState<string>('')
+  const [imageProvider, setImageProvider] = useState<string>('')
   const [captionsEnabled, setCaptionsEnabled] = useState(true)
+  const [shortsDuration, setShortsDuration] = useState(120)
+  const [madeForKids, setMadeForKids] = useState<'auto' | 'kids' | 'not_kids'>('auto')
+  // YouTube category for uploads. Empty means "platform default" — the env var — and the label says so,
+  // because a silent fallback is how this channel ended up in News & Politics for 74 videos.
+  const [categoryId, setCategoryId] = useState<string>('')
+  // Multilingual dubbing. `targetLanguages` is stored as one ordered list whose
+  // first entry is the PRIMARY language (resolve_multilingual_config treats
+  // languages[0] as primary and dubs every later entry), but it is friendlier to
+  // hold the primary and the extras separately and compose on save.
+  const [multilingualEnabled, setMultilingualEnabled] = useState(false)
+  const [primaryLanguage, setPrimaryLanguage] = useState('english')
+  const [extraLanguages, setExtraLanguages] = useState<string[]>([])
   const [hydrated, setHydrated] = useState(false)
+
+  // Canonical language list, served from voice_config.LANGUAGE_VOICES so the UI
+  // cannot drift from the languages the pipeline can actually speak.
+  const { data: dubbingLanguages } = useQuery({
+    queryKey: ['dubbing-languages'],
+    queryFn: () => voiceApi.languages(),
+    staleTime: 60 * 60 * 1000,
+  })
 
   if (!isLoading && !hydrated && data) {
     setVisualSource(profile.default_visual_source || 'stock')
     setArtStyle(profile.default_art_style || '')
+    setImageProvider(profile.default_image_provider || '')
     setCaptionsEnabled(profile.captions_enabled !== false)
+    setShortsDuration(profile.shorts_duration_seconds ?? 120)
+    setMadeForKids(
+      profile.made_for_kids === true ? 'kids'
+        : profile.made_for_kids === false ? 'not_kids'
+        : 'auto',
+    )
+    setMultilingualEnabled(Boolean(profile.multilingual_enabled))
+    setCategoryId(profile.category_id ? String(profile.category_id) : '')
+    // The column is TEXT, so it may arrive as a JSON array, a comma-separated
+    // string, or null depending on how the row was written.
+    const rawLangs = profile.target_languages
+    const storedLangs: string[] = Array.isArray(rawLangs)
+      ? rawLangs.map((x: unknown) => String(x).trim()).filter(Boolean)
+      : typeof rawLangs === 'string' && rawLangs.trim()
+        ? rawLangs.split(',').map((x: string) => x.trim()).filter(Boolean)
+        : []
+    const fallbackLang = String(profile.language || 'english').trim().toLowerCase()
+    setPrimaryLanguage(storedLangs[0] || fallbackLang || 'english')
+    setExtraLanguages(storedLangs.slice(1))
     setHydrated(true)
   }
 
@@ -70,6 +149,7 @@ function VideoDefaultsPanel({ slug }: { slug: string }) {
   return (
     <SectionCard title="Video Defaults">
       <div className="px-5 py-4 space-y-4">
+        {profileError && <p role="alert" className="text-xs text-red-600">Could not load channel defaults. Reload before saving.</p>}
         <p className="text-[11px] text-[#A3A3A3] -mt-1">
           Defaults for new videos on this channel. Can still be overridden per-video in the Visuals step.
         </p>
@@ -99,7 +179,7 @@ function VideoDefaultsPanel({ slug }: { slug: string }) {
           </div>
         </div>
 
-        {/* Default art style (only relevant when AI images is the default) */}
+        {/* Default art style (only relevant when AI images is the default) */ }
         {visualSource === 'ai_image' && (
           <div>
             <p className="text-[11px] font-medium text-[#525252] mb-2">Default art style</p>
@@ -113,6 +193,20 @@ function VideoDefaultsPanel({ slug }: { slug: string }) {
                 <option key={s.id} value={s.id}>{s.label} — {s.bestFor}</option>
               ))}
             </select>
+
+            {/* Default AI image provider (only relevant when AI images is the default) */}
+            <p className="text-[11px] font-medium text-[#525252] mb-2 mt-3">Default AI provider</p>
+            <select
+              value={imageProvider}
+              onChange={(e) => setImageProvider(e.target.value)}
+              className="h-8 px-2 text-[12px] border border-[#E5E5E5] rounded bg-white text-[#0A0A0A]"
+            >
+              <option value="">Platform default</option>
+              <option value="openai">OpenAI gpt-image-1 (paid)</option>
+              <option value="replicate">Replicate Flux/SDXL (paid, cheaper)</option>
+              <option value="pollinations">Pollinations.ai (free)</option>
+            </select>
+            <p className="text-[10px] text-[#A3A3A3] mt-1">Overrides the platform-wide default in Settings → Automation.</p>
           </div>
         )}
 
@@ -138,13 +232,165 @@ function VideoDefaultsPanel({ slug }: { slug: string }) {
           </button>
         </div>
 
+        {/* Made for Kids — YouTube COPPA declaration, per channel */}
+        <div className="pt-2 border-t border-[#F5F5F5]">
+          <div className="flex items-center gap-1.5 mb-1">
+            <ShieldCheck size={13} strokeWidth={1.5} className="text-[#525252]" />
+            <span className="text-[12px] font-medium text-[#0A0A0A]">Made for Kids</span>
+          </div>
+          <p className="text-[11px] text-[#A3A3A3] mb-2">
+            YouTube requires this declaration for content aimed at children. This is
+            per-channel, so a kids channel and an adult channel can coexist on one account.
+          </p>
+          <div className="flex gap-2">
+            {([
+              { id: 'auto', label: 'Auto-detect' },
+              { id: 'kids', label: 'For kids' },
+              { id: 'not_kids', label: 'Not for kids' },
+            ] as const).map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => setMadeForKids(opt.id)}
+                className={[
+                  'h-7 px-2.5 text-[11px] font-medium rounded border transition-colors',
+                  madeForKids === opt.id
+                    ? 'bg-[#0A0A0A] text-white border-[#0A0A0A]'
+                    : 'bg-white border-[#E5E5E5] text-[#525252] hover:border-[#D4D4D4]',
+                ].join(' ')}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-[#A3A3A3] mt-2">
+            {madeForKids === 'auto'
+              ? 'Detected automatically from this channel\'s audience.'
+              : madeForKids === 'kids'
+              ? 'Videos upload declared as made for kids (comments turn off).'
+              : 'Videos upload declared as NOT made for kids.'}
+          </p>
+        </div>
+
+        {/* Multi-language dubbing — one extra upload per extra language */}
+        <div className="pt-2 border-t border-[#F5F5F5]">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <Languages size={13} strokeWidth={1.5} className="text-[#525252]" />
+              <span className="text-[12px] font-medium text-[#0A0A0A]">Multi-language dubbing</span>
+            </div>
+            <button
+              onClick={() => setMultilingualEnabled((v) => !v)}
+              aria-label="Toggle multi-language dubbing"
+              aria-pressed={multilingualEnabled}
+              className={[
+                'h-[20px] w-[36px] rounded-full transition-colors relative flex-shrink-0',
+                multilingualEnabled ? 'bg-[#16A34A]' : 'bg-[#D4D4D4]',
+              ].join(' ')}
+            >
+              <span
+                className={[
+                  'absolute top-[2px] w-[16px] h-[16px] bg-white rounded-full transition-transform shadow-sm',
+                  multilingualEnabled ? 'translate-x-[18px]' : 'translate-x-[2px]',
+                ].join(' ')}
+              />
+            </button>
+          </div>
+          <p className="text-[11px] text-[#A3A3A3] mt-1">
+            {!multilingualEnabled
+              ? "One upload, in this channel's language only."
+              : extraLanguages.length > 0
+                ? `One extra upload per video, dubbed into ${extraLanguages.map(_langLabel).join(', ')}.`
+                : 'Choose at least one extra language below — otherwise nothing extra is uploaded.'}
+          </p>
+          {multilingualEnabled && (
+            <div className="mt-2 space-y-2">
+              <div>
+                <label className="text-[11px] font-medium text-[#525252] block mb-1">
+                  This channel&apos;s language
+                </label>
+                <select
+                  value={primaryLanguage}
+                  onChange={(e) => setPrimaryLanguage(e.target.value)}
+                  className="h-8 px-2 text-[12px] border border-[#E5E5E5] rounded bg-white text-[#0A0A0A]"
+                >
+                  {(dubbingLanguages ?? [primaryLanguage]).map((l) => (
+                    <option key={l} value={l}>{_langLabel(l)}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-[#525252] block mb-1">
+                  Also dub into
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {(dubbingLanguages ?? []).filter((l) => l !== primaryLanguage).map((id) => {
+                    const on = extraLanguages.includes(id)
+                    return (
+                      <button
+                        key={id}
+                        onClick={() => setExtraLanguages((prev) =>
+                          on ? prev.filter((x) => x !== id) : [...prev, id])}
+                        className={[
+                          'h-7 px-2.5 text-[11px] font-medium rounded border transition-colors',
+                          on
+                            ? 'bg-[#0A0A0A] text-white border-[#0A0A0A]'
+                            : 'bg-white border-[#E5E5E5] text-[#525252] hover:border-[#D4D4D4]',
+                        ].join(' ')}
+                      >
+                        {_langLabel(id)}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label className="text-[11px] font-medium text-[#525252] block mb-1">
+            YouTube category for new uploads
+          </label>
+          <select
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+            className="h-8 px-2 text-[12px] border border-[#E5E5E5] rounded bg-white text-[#0A0A0A]"
+          >
+            <option value="">Platform default</option>
+            {ytCategories.map((c) => (
+              <option key={c.id} value={c.id}>{c.title}</option>
+            ))}
+          </select>
+          <p className="text-[11px] text-[#A3A3A3] mt-1">
+            Set per channel, so one account can run a science channel and a music channel without them
+            competing for the same category. Changing this affects future uploads only — existing videos
+            keep theirs.
+          </p>
+        </div>
+
+        <label className="block text-xs">
+          Default Shorts length (seconds)
+          <input aria-label="Default Shorts length" type="number" min={30} max={180} step={1}
+            value={shortsDuration} onChange={event => setShortsDuration(Number(event.target.value))}
+            className="block border rounded p-2 mt-1" />
+          <span className="text-[11px] text-[#737373]">30-180 seconds; 120s if unset. Applies to generated-script Shorts, not extracted or raw animated clips.</span>
+        </label>
+
         <button
           onClick={() => save.mutate({
+            shorts_duration_seconds: shortsDuration,
             default_visual_source: visualSource,
             default_art_style: visualSource === 'ai_image' ? (artStyle || undefined) : undefined,
+            default_image_provider: visualSource === 'ai_image' ? (imageProvider || undefined) : undefined,
             captions_enabled: captionsEnabled,
+            made_for_kids: madeForKids === 'auto' ? null : madeForKids === 'kids',
+            category_id: categoryId || null,
+            multilingual_enabled: multilingualEnabled,
+            // languages[0] is the primary; every later entry gets its own upload,
+            // which is why a list of length 1 means "no variants".
+            target_languages: [primaryLanguage, ...extraLanguages],
           })}
-          disabled={save.isPending}
+          disabled={save.isPending || isLoading || !!profileError || !Number.isInteger(shortsDuration) || shortsDuration < 30 || shortsDuration > 180}
           className="h-8 px-3 text-[12px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] transition-colors disabled:opacity-40 flex items-center gap-1.5"
         >
           {save.isPending ? <Loader2 size={12} strokeWidth={1.5} className="animate-spin" /> : null}
@@ -438,8 +684,7 @@ function KeywordClustersPanel({ slug }: { slug: string }) {
   const clusters = useMutation({
     mutationFn: (t: string) => channelOpsApi.keywordClusters(t, slug),
     onError: (err: any) => {
-      const detail = err?.response?.data?.detail
-      toast.error(typeof detail === 'string' ? detail : 'Keyword lookup failed')
+      toast.error(apiErrorMessage(err, 'Keyword lookup failed'))
     },
   })
 
@@ -507,6 +752,126 @@ function KeywordClustersPanel({ slug }: { slug: string }) {
 
 // ─── Rank Tracking panel ───────────────────────────────────────────────────────
 
+function CollabPanel({ slug }: { slug: string }) {
+  const toast = useToast()
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  const find = useMutation<any, any, void>({
+    mutationFn: () => channelOpsApi.collaborators(slug),
+    onError: (err: any) => toast.error(apiErrorMessage(err, 'Could not look for collaboration partners')),
+  })
+
+  const result: any = find.data
+  const picks: any[] = result?.picks ?? []
+
+  const copy = (channelId: string, text: string) => {
+    navigator.clipboard.writeText(text)
+      .then(() => { setCopiedId(channelId); toast.success('Outreach message copied') })
+      .catch(() => toast.error('Could not copy - select the text manually'))
+  }
+
+  return (
+    <div className="bg-white border border-[#E5E5E5] rounded-md p-6">
+      <div className="flex items-start justify-between gap-4">
+        <p className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest">Collaboration Ideas</p>
+        <button
+          onClick={() => find.mutate()}
+          disabled={find.isPending}
+          className="flex-shrink-0 inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md bg-[#0A0A0A] text-white hover:bg-[#171717] disabled:opacity-50"
+        >
+          {find.isPending
+            ? <Loader2 size={12} strokeWidth={1.5} className="animate-spin" />
+            : <Search size={12} strokeWidth={1.5} />}
+          {picks.length ? 'Look again' : 'Find partners'}
+        </button>
+      </div>
+
+      {/* The description is a sibling of the title, not a column beside the button. Sharing that row with a
+          158px button in a 348px card left the text 174px wide — it wrapped every three words and read as a
+          layout fault. Title and action on one line, description at full width below, which is the vertical
+          order Primer's Blankslate guidance uses (title, description, then the action). */}
+      <p className="text-[12px] text-[#737373] mt-1 leading-5">
+        Channels in this niche whose audience overlaps without competing for the same uploads.
+        Nothing is sent on your behalf and no views are traded - you decide whether to reach out.
+      </p>
+
+      {find.isPending && (
+        <p className="text-[12px] text-[#A3A3A3] mt-4">
+          Searching YouTube for channels in this niche, then picking the closest fits…
+        </p>
+      )}
+
+      {!find.isPending && result && !result.ok && (
+        <p className="text-[12px] text-[#B45309] mt-4">{result.error || 'No suggestions available.'}</p>
+      )}
+
+      {!find.isPending && picks.length > 0 && (
+        <div className="mt-5 space-y-4">
+          {picks.map((pick) => (
+            <div key={pick.channel_id} className="border-l-2 border-[#E5E5E5] pl-4">
+              <div className="flex items-center gap-2 flex-wrap">
+                <a
+                  href={pick.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[13px] font-medium text-[#0A0A0A] hover:underline inline-flex items-center gap-1"
+                >
+                  {pick.title}
+                  <ExternalLink size={11} strokeWidth={1.5} className="text-[#A3A3A3]" />
+                </a>
+                {pick.handle && <span className="text-[11px] text-[#A3A3A3]">@{pick.handle}</span>}
+                {pick.subscribers > 0 && (
+                  <span className="text-[11px] text-[#A3A3A3]">
+                    {pick.subscribers.toLocaleString()} subscribers
+                  </span>
+                )}
+              </div>
+              {pick.why && <p className="text-[12px] text-[#525252] mt-1.5 leading-5">{pick.why}</p>}
+              {pick.complement && (
+                <p className="text-[12px] text-[#737373] mt-1 leading-5">
+                  <span className="text-[#A3A3A3]">They bring:</span> {pick.complement}
+                </p>
+              )}
+              {pick.outreach && (
+                <div className="mt-2 bg-[#FAFAFA] border border-[#E5E5E5] rounded-md p-3">
+                  <p className="text-[11px] text-[#A3A3A3] uppercase tracking-widest mb-1">Suggested message</p>
+                  <p className="text-[12px] text-[#0A0A0A] whitespace-pre-wrap leading-5">{pick.outreach}</p>
+                  <button
+                    onClick={() => copy(pick.channel_id, pick.outreach)}
+                    className="mt-2 text-[11px] text-[#525252] hover:text-[#0A0A0A] underline"
+                  >
+                    {copiedId === pick.channel_id ? 'Copied' : 'Copy message'}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          {Array.isArray(result?.dropped) && result.dropped.length > 0 && (
+            <p className="text-[11px] text-[#A3A3A3]">
+              {result.dropped.length} suggestion{result.dropped.length === 1 ? '' : 's'} pointed at a
+              channel we couldn't confirm, so {result.dropped.length === 1 ? 'it was' : 'they were'} left out.
+            </p>
+          )}
+          {Array.isArray(result?.dropped_oversized) && result.dropped_oversized.length > 0 && (
+            <p className="text-[11px] text-[#A3A3A3]">
+              {result.dropped_oversized.length} much larger channel
+              {result.dropped_oversized.length === 1 ? ' was' : 's were'} left out — a partner with 100×
+              your reach is not a realistic ask.
+            </p>
+          )}
+        </div>
+      )}
+
+      {!find.isPending && (result?.candidates?.length ?? 0) > 0 && (
+        <p className="text-[11px] text-[#A3A3A3] mt-4">
+          Compared {result.candidates.length} channel{result.candidates.length === 1 ? '' : 's'} found on
+          YouTube. Lookups are capped per hour, so this may need a second try later.
+        </p>
+      )}
+    </div>
+  )
+}
+
 function RankTrackingPanel({ slug }: { slug: string }) {
   const toast = useToast()
   const [videoId, setVideoId] = useState('')
@@ -518,8 +883,7 @@ function RankTrackingPanel({ slug }: { slug: string }) {
       history.refetch()
     },
     onError: (err: any) => {
-      const detail = err?.response?.data?.detail
-      toast.error(typeof detail === 'string' ? detail : 'Rank check failed')
+      toast.error(apiErrorMessage(err, 'Rank check failed'))
     },
   })
 
@@ -532,8 +896,7 @@ function RankTrackingPanel({ slug }: { slug: string }) {
   const narrative = useMutation({
     mutationFn: () => channelOpsApi.rankNarrative(videoId.trim(), keyword.trim()),
     onError: (err: any) => {
-      const detail = err?.response?.data?.detail
-      toast.error(typeof detail === 'string' ? detail : 'Could not explain rank movement')
+      toast.error(apiErrorMessage(err, 'Could not explain rank movement'))
     },
   })
 
@@ -1066,12 +1429,244 @@ function BrandingPanel({ slug, channel }: { slug: string; channel: any }) {
   )
 }
 
+// ─── Bulk metadata edit (a user-specified change, with a dry run) ─────────────
+
+type BulkOp = { field: string; action: string; value: any }
+
+const _BULK_FIELDS: Array<{ id: string; label: string; actions: string[] }> = [
+  { id: 'description', label: 'Description', actions: ['append', 'prepend', 'replace', 'set'] },
+  { id: 'title',       label: 'Title',       actions: ['append', 'prepend', 'replace', 'set'] },
+  { id: 'tags',        label: 'Tags',        actions: ['add', 'remove', 'set'] },
+]
+
+// Appending the same text twice appends it twice, so "apply" is not idempotent for every operation. The
+// preview is what makes that visible before it happens.
+function BulkEditPanel({
+  slug, videoIds, onApplied, onClose,
+}: { slug: string; videoIds: string[]; onApplied: () => void; onClose: () => void }) {
+  const toast = useToast()
+  const [ops, setOps] = useState<BulkOp[]>([{ field: 'description', action: 'append', value: '' }])
+  const [preview, setPreview] = useState<any>(null)
+
+  // Every edit clears the preview. Applying a preview that no longer matches the operations is the one way
+  // this panel could write something other than what it showed, so it cannot happen: no preview, no apply.
+  const edit = (index: number, patch: Partial<BulkOp>) => {
+    setOps(prev => prev.map((op, i) => (i === index ? { ...op, ...patch } : op)))
+    setPreview(null)
+  }
+
+  const previewMutation = useMutation({
+    mutationFn: () => channelOpsApi.bulkPreview(videoIds, ops, slug),
+    onSuccess: (res) => {
+      setPreview(res)
+      if (res?.ok === false) toast.error(res?.error ?? 'Could not preview that edit')
+    },
+    onError: (e: any) => toast.error(apiErrorMessage(e, 'Could not preview that edit')),
+  })
+
+  const applyMutation = useMutation({
+    mutationFn: () => channelOpsApi.bulkApply(videoIds, ops, slug, true),
+    onSuccess: (res) => {
+      if (res?.ok) {
+        const skipped = res.skipped ? `, ${res.skipped} needed no change` : ''
+        const failed = res.failed ? `, ${res.failed} failed` : ''
+        toast.success(`Updated ${res.changed ?? 0} of ${res.attempted ?? videoIds.length} videos${skipped}${failed}`)
+        setPreview(null)
+        onApplied()
+      } else {
+        toast.error(res?.error ?? 'Bulk edit failed')
+      }
+    },
+    onError: (e: any) => toast.error(apiErrorMessage(e, 'Bulk edit failed')),
+  })
+
+  const planned = preview?.planned ?? []
+  const blocked = preview?.blocked ?? []
+  const counts = preview?.counts
+  const canApply = Boolean(preview) && preview?.ok !== false && planned.length > 0
+
+  const valueInput = (op: BulkOp, index: number) => {
+    if (op.action === 'replace') {
+      const v = (op.value && typeof op.value === 'object') ? op.value : { find: '', replace: '' }
+      return (
+        <div className="flex items-center gap-1.5 flex-1">
+          <input
+            value={v.find ?? ''}
+            onChange={e => edit(index, { value: { ...v, find: e.target.value } })}
+            placeholder="find"
+            className="h-7 flex-1 min-w-0 px-2 text-[11px] border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A]"
+          />
+          <span className="text-[10px] text-[#A3A3A3]">→</span>
+          <input
+            value={v.replace ?? ''}
+            onChange={e => edit(index, { value: { ...v, replace: e.target.value } })}
+            placeholder="replace with"
+            className="h-7 flex-1 min-w-0 px-2 text-[11px] border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A]"
+          />
+        </div>
+      )
+    }
+    const isTags = op.field === 'tags'
+    return (
+      <input
+        value={typeof op.value === 'string' ? op.value : ''}
+        onChange={e => edit(index, { value: e.target.value })}
+        placeholder={isTags ? 'tag one, tag two' : op.action === 'append' ? 'text to add at the end' : 'text'}
+        className="h-7 flex-1 min-w-0 px-2 text-[11px] border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A]"
+      />
+    )
+  }
+
+  return (
+    <div className="border-b border-[#E5E5E5] bg-white px-5 py-3">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest">
+          Bulk edit {videoIds.length} video{videoIds.length === 1 ? '' : 's'}
+        </p>
+        <button onClick={onClose} className="text-[10px] font-medium text-[#525252] hover:text-[#0A0A0A]">
+          Close
+        </button>
+      </div>
+
+      <div className="space-y-1.5">
+        {ops.map((op, index) => (
+          <div key={index} className="flex items-center gap-1.5">
+            <select
+              value={op.field}
+              onChange={e => {
+                const field = e.target.value
+                const actions = _BULK_FIELDS.find(f => f.id === field)?.actions ?? ['set']
+                edit(index, { field, action: actions[0], value: '' })
+              }}
+              className="h-7 px-1.5 text-[11px] border border-[#E5E5E5] rounded bg-white"
+            >
+              {_BULK_FIELDS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+            </select>
+            <select
+              value={op.action}
+              onChange={e => edit(index, { action: e.target.value, value: '' })}
+              className="h-7 px-1.5 text-[11px] border border-[#E5E5E5] rounded bg-white"
+            >
+              {(_BULK_FIELDS.find(f => f.id === op.field)?.actions ?? []).map(a => (
+                <option key={a} value={a}>{a}</option>
+              ))}
+            </select>
+            {valueInput(op, index)}
+            {ops.length > 1 && (
+              <button
+                onClick={() => { setOps(prev => prev.filter((_, i) => i !== index)); setPreview(null) }}
+                className="h-7 px-1.5 text-[#A3A3A3] hover:text-[#DC2626]"
+                title="Remove this operation"
+              >
+                <Trash2 size={11} strokeWidth={1.5} />
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-2 mt-2 flex-wrap">
+        <button
+          onClick={() => setOps(prev => [...prev, { field: 'description', action: 'append', value: '' }])}
+          className="h-6 px-2 text-[10px] font-medium text-[#525252] hover:text-[#0A0A0A]"
+        >
+          + Add operation
+        </button>
+        <button
+          onClick={() => previewMutation.mutate()}
+          disabled={previewMutation.isPending}
+          className="h-6 px-2.5 text-[11px] font-medium border border-[#E5E5E5] rounded hover:border-[#0A0A0A] disabled:opacity-40 flex items-center gap-1.5"
+        >
+          {previewMutation.isPending
+            ? <Loader2 size={10} strokeWidth={1.5} className="animate-spin" />
+            : <Search size={10} strokeWidth={1.5} />}
+          Preview
+        </button>
+        <button
+          onClick={() => applyMutation.mutate()}
+          disabled={!canApply || applyMutation.isPending}
+          className="h-6 px-2.5 text-[11px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] disabled:opacity-40 flex items-center gap-1.5"
+          title={canApply ? 'Write these changes to YouTube' : 'Preview first'}
+        >
+          {applyMutation.isPending
+            ? <Loader2 size={10} strokeWidth={1.5} className="animate-spin" />
+            : <CheckCircle2 size={10} strokeWidth={1.5} />}
+          Apply to {planned.length || 0}
+        </button>
+        {!preview && (
+          <span className="text-[10px] text-[#A3A3A3]">Preview first — nothing is written until you apply.</span>
+        )}
+      </div>
+
+      {preview && (
+        <div className="mt-2.5 border border-[#E5E5E5] rounded">
+          <div className="px-3 py-1.5 bg-[#FAFAFA] border-b border-[#E5E5E5] flex items-center gap-3 text-[10px] flex-wrap">
+            <span className="text-[#0A0A0A] font-medium">{counts?.planned ?? 0} will change</span>
+            <span className="text-[#A3A3A3]">{counts?.skipped ?? 0} already match</span>
+            {blocked.length > 0 && <span className="text-[#B45309]">{blocked.length} cannot be changed</span>}
+            {preview.missing?.length > 0 && (
+              <span className="text-[#A3A3A3]">{preview.missing.length} not found on YouTube</span>
+            )}
+          </div>
+          <div className="max-h-56 overflow-auto divide-y divide-[#F5F5F5]">
+            {planned.slice(0, 12).map((row: any) => (
+              <div key={row.video_id} className="px-3 py-1.5">
+                <p className="text-[11px] text-[#0A0A0A] truncate">{row.title}</p>
+                {row.changes.map((change: any, i: number) => (
+                  <p key={i} className="text-[10px] text-[#525252] mt-0.5">
+                    <span className="text-[#A3A3A3]">{change.field}:</span>{' '}
+                    {change.field === 'tags'
+                      ? `${(change.before || []).length} tags → ${(change.after || []).length} tags`
+                      : <>{_truncate(change.before)} → <span className="text-[#0A0A0A]">{_truncate(change.after)}</span></>}
+                  </p>
+                ))}
+              </div>
+            ))}
+            {planned.length > 12 && (
+              <div className="px-3 py-1.5 text-[10px] text-[#A3A3A3]">
+                and {planned.length - 12} more
+              </div>
+            )}
+            {blocked.map((row: any) => (
+              <div key={row.video_id} className="px-3 py-1.5">
+                <p className="text-[11px] text-[#0A0A0A] truncate">{row.title}</p>
+                {row.reasons.map((reason: string, i: number) => (
+                  <p key={i} className="text-[10px] text-[#B45309] mt-0.5">{reason}</p>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {preview?.ok === false && (
+        <div className="mt-2 text-[10px] text-[#DC2626] space-y-0.5">
+          {(preview.errors ?? []).map((err: string, i: number) => <p key={i}>{err}</p>)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Long descriptions would otherwise push the diff off the row.
+function _truncate(text: string) {
+  const value = String(text ?? '')
+  return value.length > 120 ? value.slice(0, 120) + '…' : value
+}
+
 // ─── Video history ────────────────────────────────────────────────────────────
+
+// Ten rows per page. Chosen so the table plus its heading fits beside the rail without the reader losing
+// sight of the page header -- the previous 30 rows ran to roughly 1,400px with no controls attached.
+const VIDEOS_PAGE_SIZE = 10
 
 function VideosPanel({ slug }: { slug: string }) {
   const toast = useToast()
   const queryClient = useQueryClient()
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [needle, setNeedle] = useState('')
+  const [page, setPage] = useState(1)
 
   const { data, isLoading } = useQuery({
     queryKey: ['channel-videos', slug],
@@ -1109,9 +1704,24 @@ function VideosPanel({ slug }: { slug: string }) {
 
   const allVideos: any[] = Array.isArray(data) ? data : (data?.videos ?? [])
   // Filter to this channel where possible
-  const videos = allVideos.filter((v: any) => !v.channel_slug || v.channel_slug === slug).slice(0, 30)
-  const fixableIds = videos.map((v: any) => v.youtube_id ?? v.video_id).filter(Boolean)
+  const forChannel = allVideos.filter((v: any) => !v.channel_slug || v.channel_slug === slug)
+
+  // Search and paging, because this panel used to render up to 30 rows with nothing to narrow them: roughly
+  // 1,400px of table and no statement of what it was for. Ten rows is what fits beside the rail without
+  // scrolling past the fold, and the heading below says what the list is and what you can do to it.
+  const term = needle.trim().toLowerCase()
+  const matches = term
+    ? forChannel.filter((v: any) => String(v.title ?? v.topic ?? '').toLowerCase().includes(term))
+    : forChannel
+  const pageCount = Math.max(1, Math.ceil(matches.length / VIDEOS_PAGE_SIZE))
+  // Clamped rather than stored: narrowing the search while on page 3 must not show an empty table.
+  const currentPage = Math.min(page, pageCount)
+  const pageVideos = matches.slice((currentPage - 1) * VIDEOS_PAGE_SIZE, currentPage * VIDEOS_PAGE_SIZE)
+
+  const fixableIds = pageVideos.map((v: any) => v.youtube_id ?? v.video_id).filter(Boolean)
   const allSelected = fixableIds.length > 0 && fixableIds.every((id: string) => selected.has(id))
+  const firstShown = matches.length === 0 ? 0 : (currentPage - 1) * VIDEOS_PAGE_SIZE + 1
+  const lastShown = Math.min(currentPage * VIDEOS_PAGE_SIZE, matches.length)
 
   const toggleAll = () => {
     setSelected(allSelected ? new Set() : new Set(fixableIds))
@@ -1126,19 +1736,61 @@ function VideosPanel({ slug }: { slug: string }) {
   }
 
   if (isLoading) return (
-    <SectionCard title="Videos">
+    /* Same shape as the loaded panel — toolbar row, then rows — so nothing jumps when the data lands. */
+    <div className="bg-white border border-[#E5E5E5] rounded-md overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-[#E5E5E5]">
+        <div className="h-3 w-24 bg-[#F5F5F5] rounded animate-pulse" />
+        <div className="h-7 w-52 bg-[#F5F5F5] rounded animate-pulse" />
+      </div>
       <div className="space-y-1 p-4">
-        {Array.from({ length: 8 }).map((_, i) => (
+        {Array.from({ length: VIDEOS_PAGE_SIZE }).map((_, i) => (
           <div key={i} className="h-10 bg-[#F5F5F5] rounded animate-pulse" />
         ))}
       </div>
-    </SectionCard>
+    </div>
   )
 
   return (
-    <SectionCard title="Videos">
+    /* Its own card rather than a `SectionCard`: this panel needs a heading that states what it is *for* and
+       a toolbar, and a title-only card cannot carry either. */
+    <div className="bg-white border border-[#E5E5E5] rounded-md overflow-hidden">
+      {/* Toolbar, not a second heading. The tab above already names this section and says what it is for,
+          so repeating both here put the same sentence on screen twice within 300px. What is left is the one
+          thing the tab bar cannot show — how much of the list you are looking at — beside the search. */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-b border-[#E5E5E5]">
+        <p className="text-[12px] text-[#525252] tabular-nums">
+          {matches.length > 0
+            ? <>{firstShown}–{lastShown} of {matches.length}</>
+            : <span className="text-[#A3A3A3]">No videos</span>}
+        </p>
+        <div className="relative">
+          <Search
+            size={12}
+            strokeWidth={1.5}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#A3A3A3] pointer-events-none"
+          />
+          <input
+            type="search"
+            value={needle}
+            onChange={e => { setNeedle(e.target.value); setPage(1) }}
+            placeholder="Search titles…"
+            aria-label="Search this channel's videos by title"
+            className="h-7 w-52 pl-8 pr-2 text-[12px] border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors"
+          />
+        </div>
+      </div>
+
+      {/* Actions for the selection float over the page instead of sitting in flow above the table. In flow
+          the bar pushed the rows down 94px the moment anything was selected, so the row just clicked moved
+          out from under the cursor. Primer's ActionBar exists for exactly this: it appears *on* selection
+          rather than reflowing the list. The styling stays light so the bar's own controls keep their
+          contrast; only the positioning and the shadow are new. */}
       {selected.size > 0 && (
-        <div className="flex items-center justify-between px-5 py-2.5 bg-[#FAFAFA] border-b border-[#E5E5E5]">
+        <div
+          role="region"
+          aria-label={`Actions for ${selected.size} selected videos`}
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-4 rounded-lg border border-[#E5E5E5] bg-white px-4 py-2.5 shadow-lg"
+        >
           <span className="text-[11px] font-medium text-[#0A0A0A]">{selected.size} selected</span>
           <div className="flex items-center gap-2">
             <button
@@ -1146,6 +1798,13 @@ function VideosPanel({ slug }: { slug: string }) {
               className="h-6 px-2.5 text-[10px] font-medium text-[#525252] hover:text-[#0A0A0A] transition-colors"
             >
               Clear
+            </button>
+            <button
+              onClick={() => setBulkOpen(open => !open)}
+              className="h-6 px-2.5 text-[11px] font-medium border border-[#E5E5E5] rounded hover:border-[#0A0A0A] transition-colors flex items-center gap-1.5"
+            >
+              <Type size={10} strokeWidth={1.5} />
+              Bulk edit ({selected.size})
             </button>
             <button
               onClick={() => fixSelected.mutate()}
@@ -1162,13 +1821,51 @@ function VideosPanel({ slug }: { slug: string }) {
         </div>
       )}
 
-      {videos.length === 0 ? (
-        <div className="px-5 py-10 text-center text-[12px] text-[#A3A3A3]">
-          <Video size={20} strokeWidth={1.5} className="mx-auto mb-2 text-[#D4D4D4]" />
-          No videos found for this channel
+      {bulkOpen && selected.size > 0 && (
+        <BulkEditPanel
+          slug={slug}
+          videoIds={Array.from(selected)}
+          onClose={() => setBulkOpen(false)}
+          onApplied={() => {
+            setBulkOpen(false)
+            setSelected(new Set())
+            queryClient.invalidateQueries({ queryKey: ['channel-videos', slug] })
+          }}
+        />
+      )}
+
+      {matches.length === 0 ? (
+        /* Two empty states, not one. A channel with no videos and a search that matched nothing are
+           different situations with different next steps, and Primer's empty-state guidance is explicit
+           that the copy should say which one you are in. */
+        <div className="px-5 py-12 text-center">
+          <Video size={22} strokeWidth={1.5} className="mx-auto mb-3 text-[#D4D4D4]" />
+          {term ? (
+            <>
+              <p className="text-[13px] font-medium text-[#0A0A0A]">No videos match “{needle.trim()}”</p>
+              <p className="text-[12px] text-[#A3A3A3] mt-1">
+                {forChannel.length} video{forChannel.length !== 1 ? 's' : ''} on this channel, none of them
+                with that in the title.
+              </p>
+              <button
+                onClick={() => setNeedle('')}
+                className="mt-3 h-7 px-3 text-[11px] font-medium border border-[#E5E5E5] rounded hover:border-[#0A0A0A] transition-colors"
+              >
+                Clear search
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-[13px] font-medium text-[#0A0A0A]">No videos on this channel yet</p>
+              <p className="text-[12px] text-[#A3A3A3] mt-1 max-w-md mx-auto">
+                New videos and anything already on YouTube arrive here after an analytics sync, and each one
+                can then be fixed in bulk.
+              </p>
+            </>
+          )}
         </div>
       ) : (
-        <table className="w-full text-[12px]">
+        <table className="w-full text-[12px]" data-testid="channel-videos-table">
           <thead>
             <tr className="border-b border-[#E5E5E5]">
               <th scope="col" className="w-9 px-4 py-2.5 text-left">
@@ -1176,17 +1873,22 @@ function VideosPanel({ slug }: { slug: string }) {
                   type="checkbox"
                   checked={allSelected}
                   onChange={toggleAll}
-                  aria-label="Select all videos"
+                  aria-label="Select all videos on this page"
                   className="w-3.5 h-3.5 rounded border-[#D4D4D4] accent-[#0A0A0A]"
                 />
               </th>
-              {['Title', 'Published', 'Views', 'Status', ''].map((h) => (
-                <th key={h} scope="col" className="px-4 py-2.5 text-left text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest">{h}</th>
+              {['Title', 'Published', 'Views', 'Click-through', 'Status', ''].map((h) => (
+                <th
+                  key={h}
+                  scope="col"
+                  title={h === 'Click-through' ? CTR_COLUMN_NOTE : undefined}
+                  className="px-4 py-2.5 text-left text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest"
+                >{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-[#F5F5F5]">
-            {videos.map((v: any) => {
+            {pageVideos.map((v: any) => {
               const ytId = v.youtube_id ?? v.video_id
               return (
               <tr key={ytId ?? v.id} className="hover:bg-[#FAFAFA]">
@@ -1220,6 +1922,23 @@ function VideosPanel({ slug }: { slug: string }) {
                 <td className="px-4 py-2.5 text-[#525252]">
                   {v.views != null ? Number(v.views).toLocaleString() : '—'}
                 </td>
+                <td className="px-4 py-2.5 whitespace-nowrap">
+                  {v.ctr_percent != null ? (
+                    // Date under the number, not just in the tooltip: "as of" is what distinguishes a
+                    // lifetime reading from the windowed views column to its left.
+                    <span title={ctrTooltip(v)}>
+                      <span className="text-[#0A0A0A]">{fmtCtr(v.ctr_percent)}</span>
+                      {v.ctr_captured_at && (
+                        <span className="block text-[10px] text-[#A3A3A3]">{ctrAsOf(v.ctr_captured_at)}</span>
+                      )}
+                    </span>
+                  ) : (
+                    <span
+                      className="text-[#A3A3A3]"
+                      title="No click-through reading captured for this video. It needs the browser extension and a visit to your own Studio."
+                    >—</span>
+                  )}
+                </td>
                 <td className="px-4 py-2.5">
                   {v.status ? (
                     <span className={`text-[11px] font-medium ${
@@ -1235,6 +1954,9 @@ function VideosPanel({ slug }: { slug: string }) {
                     <button
                       onClick={() => fixVideo.mutate(ytId)}
                       disabled={fixVideo.isPending}
+                      /* `aria-label`, not just `title`: an icon-only control needs an accessible name, and
+                         a tooltip is not one. */
+                      aria-label={`Fix SEO for ${v.title ?? v.topic ?? ytId}`}
                       title="Fix SEO"
                       className="h-6 w-6 inline-flex items-center justify-center text-[#A3A3A3] hover:text-[#0A0A0A] border border-[#E5E5E5] rounded transition-colors disabled:opacity-40"
                     >
@@ -1248,17 +1970,190 @@ function VideosPanel({ slug }: { slug: string }) {
           </tbody>
         </table>
       )}
-    </SectionCard>
+
+      {/* Paging, in the shape Primer uses: a range summary on the left, the controls on the right, and
+          nothing rendered at all when everything already fits on one page. */}
+      {matches.length > VIDEOS_PAGE_SIZE && (
+        <div className="flex items-center justify-between px-5 py-3 border-t border-[#E5E5E5]">
+          <span className="text-[11px] text-[#A3A3A3]">
+            Page {currentPage} of {pageCount}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage(currentPage - 1)}
+              disabled={currentPage <= 1}
+              className="h-7 px-3 text-[11px] font-medium border border-[#E5E5E5] rounded hover:border-[#0A0A0A] disabled:opacity-40 disabled:hover:border-[#E5E5E5] transition-colors"
+            >
+              Previous
+            </button>
+            <button
+              onClick={() => setPage(currentPage + 1)}
+              disabled={currentPage >= pageCount}
+              className="h-7 px-3 text-[11px] font-medium border border-[#E5E5E5] rounded hover:border-[#0A0A0A] disabled:opacity-40 disabled:hover:border-[#E5E5E5] transition-colors"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
+// ─── Channel management: reconnect and remove ─────────────────────────────────
+// Both actions already had endpoints (POST /{slug}/reset-auth, DELETE /{slug}) but were reachable only from
+// the channel *list* -- and "Reconnect" there appears only when the stored auth already looks broken. A
+// channel that is merely *wrong* -- revoked scopes, a grant that landed on the wrong Google account, a
+// token the status check still calls OK -- therefore had no way out, and removing a channel had no UI at
+// all. This is the panel that fixes that, on the page where you look at one channel.
+
+function ChannelManagementPanel({ slug, channel }: { slug: string; channel: any }) {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const navigate = useNavigate()
+  const [busy, setBusy] = useState<'reconnect' | 'remove' | null>(null)
+
+  // Admins list every channel on the deployment, so this may belong to someone else.
+  const notMine = channel?.is_mine === false
+
+  async function reconnect() {
+    setBusy('reconnect')
+    try {
+      const data = await channelsApi.resetAuth(slug)
+      if (data?.requires_oauth && data?.oauth_url) {
+        const ok = await openOAuthPopup(data.oauth_url)
+        toast.addToast(ok ? 'Channel reconnected' : 'Reconnect cancelled', ok ? 'success' : 'error')
+      } else {
+        toast.addToast('Channel reconnected', 'success')
+      }
+      qc.invalidateQueries({ queryKey: ['channels'] })
+    } catch (e) {
+      toast.error(apiErrorMessage(e, 'Reconnect failed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function remove() {
+    const who = channel?.owner_email ? ` (owned by ${channel.owner_email})` : ''
+    const ok = window.confirm(
+      `Remove ${slug}${who}?\n\n` +
+      `This deletes the channel, its stored OAuth token and its settings for that account. ` +
+      `Videos already on YouTube are not touched.`
+    )
+    if (!ok) return
+    setBusy('remove')
+    try {
+      await channelsApi.remove(slug)
+      toast.success('Channel removed')
+      qc.invalidateQueries({ queryKey: ['channels'] })
+      navigate('/app/channels')
+    } catch (e) {
+      toast.error(apiErrorMessage(e, 'Remove failed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <SectionCard title="Channel Management">
+      <div className="px-5 py-3.5 space-y-3">
+        {notMine && (
+          <p className="text-[11px] text-[#B45309] bg-[#FFFBEB] border border-[#FDE68A] rounded px-2.5 py-2">
+            This channel belongs to {channel?.owner_email || 'another account'}. You can see it because you
+            are an admin — removing or reconnecting it affects that account, not yours.
+          </p>
+        )}
+
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[12px] font-medium text-[#0A0A0A]">Reconnect</p>
+            <p className="text-[11px] text-[#A3A3A3] mt-0.5">
+              Run the Google consent flow again and replace the stored token. Use this when a channel's auth
+              is revoked, or was granted to the wrong Google account.
+            </p>
+          </div>
+          <button
+            onClick={reconnect}
+            disabled={busy !== null}
+            className="h-7 px-3 text-[11px] font-medium border border-[#E5E5E5] rounded hover:border-[#0A0A0A] transition-colors disabled:opacity-40 shrink-0 flex items-center gap-1.5"
+          >
+            <RotateCcw size={11} strokeWidth={1.5} />
+            {busy === 'reconnect' ? 'Opening…' : 'Reconnect'}
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 border-t border-[#F5F5F5] pt-3">
+          <div className="min-w-0">
+            <p className="text-[12px] font-medium text-[#BE123C]">Remove channel</p>
+            <p className="text-[11px] text-[#A3A3A3] mt-0.5">
+              Deletes the channel, its token and its settings. Videos already uploaded stay on YouTube.
+            </p>
+          </div>
+          <button
+            onClick={remove}
+            disabled={busy !== null}
+            className="h-7 px-3 text-[11px] font-medium text-white bg-[#BE123C] rounded hover:bg-[#9F1239] transition-colors disabled:opacity-40 shrink-0 flex items-center gap-1.5"
+          >
+            <Trash2 size={11} strokeWidth={1.5} />
+            {busy === 'remove' ? 'Removing…' : 'Remove'}
+          </button>
+        </div>
+      </div>
+    </SectionCard>
+  )
+}
+
+
+/**
+ * The channel page's sections, in the shape Primer calls **UnderlineNav**: tabs that change the URL.
+ *
+ * URL-backed rather than self-hosted panels, and Primer is explicit about the distinction — use the in-page
+ * variant for related panels switched between inside one context, the URL variant when the tab is a
+ * *destination*. This is a destination: a creator working on discoverability should be able to bookmark the
+ * SEO view, share it, refresh into it, and get back to it with the browser's back button.
+ *
+ * `blurb` is not decoration. This page previously stacked twelve panels whose headings named themselves and
+ * nothing that said what the page was *for*; a tab labelled only "SEO" would repeat that one level up, so
+ * each states its purpose in a sentence.
+ *
+ * Tabs also stop the other panels mounting and querying on load. Previously all twelve fired the moment the
+ * page opened — several of them against the YouTube API — so switching tabs is the difference between one
+ * panel's requests and a dozen.
+ */
+const CHANNEL_TABS = [
+  {
+    id: 'videos',
+    label: 'Videos',
+    blurb: 'Everything published on this channel, with the numbers that matter. Select any to fix titles, descriptions and tags together.',
+  },
+  {
+    id: 'seo',
+    label: 'SEO',
+    blurb: 'How discoverable the channel is: the audit checklist, the keyword clusters worth targeting, and where you rank for them.',
+  },
+  {
+    id: 'growth',
+    label: 'Growth',
+    blurb: 'What to do next — an AI read on your own performance data, how you compare with a channel you name, and who to collaborate with.',
+  },
+  {
+    id: 'setup',
+    label: 'Setup',
+    blurb: 'How this channel produces videos, and the access and branding it publishes under.',
+  },
+] as const
+
 export default function ChannelDetailPage() {
-  const { slug } = useParams<{ slug: string }>()
-  const { data: channels = [] } = useChannels()
+  const { slug, tab } = useParams<{ slug: string; tab?: string }>()
+  const { data: channels = [], isLoading: channelsLoading } = useChannels()
 
   const channel = (channels as any[]).find((c: any) => c.slug === slug)
+  // An unknown segment renders the first tab rather than nothing: a 404 would be pedantic about a stale
+  // bookmark, and the fallback is the tab the page opens on anyway.
+  const activeTab = CHANNEL_TABS.find(t => t.id === tab) ?? CHANNEL_TABS[0]
 
   // Same queryKey as AuditPanel's audit query below -- React Query dedupes this,
   // so reading live YouTube subscriber/video/view stats here costs zero extra
@@ -1274,6 +2169,22 @@ export default function ChannelDetailPage() {
   })
   const auditChannelInfo = auditData?.channel
 
+  // One-click sync from the channel page. It writes performance rows (and discovers uploads the pipeline
+  // never recorded), so it invalidates the audit -- which is where the live counts come from -- and the
+  // dashboard's fleet panel.
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  const syncAnalytics = useMutation({
+    mutationFn: () => analyticsApi.sync(slug!),
+    onSuccess: (r) => {
+      const synced = r?.synced ?? 0
+      toast.success(`Analytics synced — ${synced} video${synced === 1 ? '' : 's'} updated`)
+      queryClient.invalidateQueries({ queryKey: ['channel-audit', slug] })
+      queryClient.invalidateQueries({ queryKey: ['fleet-health'] })
+    },
+    onError: () => toast.error('Sync failed — check this channel’s YouTube token'),
+  })
+
   if (!slug) return null
 
   return (
@@ -1288,8 +2199,15 @@ export default function ChannelDetailPage() {
         </Link>
         <div className="flex items-start justify-between">
           <div>
+            {/* The registry query is local and usually fast, but when it is slow the fallback use to be
+                the bare slug — so the page opened with "doodledashtv" as its heading and then swapped to
+                "Doodle Dash TV". A placeholder holds the line instead. The slug still appears once the
+                query has settled without a match (an admin looking at a channel that is not in their
+                scope), because a placeholder forever is worse than a technical name. */}
             <h1 className="text-xl font-semibold text-[#0A0A0A]">
-              {channel?.name ?? slug}
+              {channel?.name ?? (channelsLoading
+                ? <span className="inline-block h-6 w-44 bg-[#F5F5F5] rounded animate-pulse align-middle" aria-hidden />
+                : slug)}
             </h1>
             <div className="flex items-center gap-3 mt-1">
               <code className="text-[11px] text-[#A3A3A3] bg-[#F5F5F5] px-2 py-0.5 rounded">{slug}</code>
@@ -1309,42 +2227,97 @@ export default function ChannelDetailPage() {
             </div>
           </div>
 
-          {/* Stats chips */}
-          {channel && (
-            <div className="flex items-center gap-5 bg-white border border-[#E5E5E5] rounded-md px-5 py-3">
-              {[
-                ['Subscribers', auditChannelInfo?.subscriber_count != null ? Number(auditChannelInfo.subscriber_count).toLocaleString() : '—'],
-                ['Videos', auditChannelInfo?.video_count != null ? Number(auditChannelInfo.video_count).toLocaleString() : '—'],
-                ['Views', auditChannelInfo?.view_count != null ? Number(auditChannelInfo.view_count).toLocaleString() : '—'],
-              ].map(([label, value]) => (
-                <div key={label} className="text-center">
-                  <p className="text-[14px] font-semibold text-[#0A0A0A] leading-none">{value}</p>
-                  <p className="text-[10px] text-[#A3A3A3] mt-0.5">{label}</p>
-                </div>
-              ))}
-            </div>
-          )}
+          {/* Stats chips + the one action that makes them current */}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => syncAnalytics.mutate()}
+              disabled={syncAnalytics.isPending}
+              className="h-9 px-3 text-[12px] font-medium bg-white border border-[#E5E5E5] rounded-md hover:border-[#D4D4D4] transition-colors disabled:opacity-40 flex items-center gap-1.5"
+              title="Pull the latest views, watch time and retention for this channel"
+            >
+              <RefreshCw size={12} strokeWidth={1.5} className={syncAnalytics.isPending ? 'animate-spin' : ''} />
+              {syncAnalytics.isPending ? 'Syncing…' : 'Sync analytics'}
+            </button>
+
+            {channel && (
+              <div className="flex items-center gap-5 bg-white border border-[#E5E5E5] rounded-md px-5 py-3">
+                {[
+                  ['Subscribers', auditChannelInfo?.subscriber_count != null ? Number(auditChannelInfo.subscriber_count).toLocaleString() : '—'],
+                  ['Videos', auditChannelInfo?.video_count != null ? Number(auditChannelInfo.video_count).toLocaleString() : '—'],
+                  ['Views', auditChannelInfo?.view_count != null ? Number(auditChannelInfo.view_count).toLocaleString() : '—'],
+                ].map(([label, value]) => (
+                  <div key={label} className="text-center">
+                    <p className="text-[14px] font-semibold text-[#0A0A0A] leading-none">{value}</p>
+                    <p className="text-[10px] text-[#A3A3A3] mt-0.5">{label}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Body - 2-col layout */}
-      <div className="px-8 pb-12 grid grid-cols-1 xl:grid-cols-3 gap-5">
-        {/* Left col: audit + branding */}
-        <div className="xl:col-span-1 space-y-5">
-          <AuditPanel slug={slug} />
-          <VideoDefaultsPanel slug={slug} />
-          <AICoachPanel slug={slug} />
-          <BenchmarkPanel slug={slug} />
-          <KeywordClustersPanel slug={slug} />
-          <RankTrackingPanel slug={slug} />
-          <OAuthDiagnosticsPanel />
-          <BrandingPanel slug={slug} channel={channel} />
-        </div>
+      {/* Sections. A `<nav>` of links rather than a `role="tablist"`: these change the URL, so the correct
+          semantics are navigation with `aria-current`, not a tab widget that would promise an in-page
+          swap it does not perform. */}
+      <nav aria-label="Channel sections" className="px-8 border-b border-[#E5E5E5]">
+        <ul className="flex items-center gap-6 -mb-px">
+          {CHANNEL_TABS.map(t => {
+            const isActive = t.id === activeTab.id
+            return (
+              <li key={t.id}>
+                <Link
+                  to={`/app/channels/${slug}/${t.id}`}
+                  aria-current={isActive ? 'page' : undefined}
+                  className={`inline-block py-3 text-[13px] border-b-2 transition-colors ${
+                    isActive
+                      ? 'border-[#0A0A0A] text-[#0A0A0A] font-medium'
+                      : 'border-transparent text-[#525252] hover:text-[#0A0A0A] hover:border-[#D4D4D4]'
+                  }`}
+                >
+                  {t.label}
+                </Link>
+              </li>
+            )
+          })}
+        </ul>
+      </nav>
 
-        {/* Right col: videos */}
-        <div className="xl:col-span-2">
-          <VideosPanel slug={slug} />
-        </div>
+      <div className="px-8 py-6">
+        {/* What this tab is for, said once, above its panels. */}
+        <p className="text-[12px] text-[#A3A3A3] max-w-3xl mb-5">{activeTab.blurb}</p>
+
+        {activeTab.id === 'videos' && <VideosPanel slug={slug} />}
+
+        {activeTab.id === 'seo' && (
+          <div className="grid gap-5 xl:grid-cols-2 items-start">
+            <AuditPanel slug={slug} />
+            <KeywordClustersPanel slug={slug} />
+            <RankTrackingPanel slug={slug} />
+          </div>
+        )}
+
+        {activeTab.id === 'growth' && (
+          <div className="grid gap-5 xl:grid-cols-2 items-start">
+            <AICoachPanel slug={slug} />
+            <BenchmarkPanel slug={slug} />
+            <CollabPanel slug={slug} />
+          </div>
+        )}
+
+        {activeTab.id === 'setup' && (
+          /* Two explicit columns, not a uniform grid. A grid paired the 784px Video Defaults panel with the
+             312px Branding panel and left a 472px hole under Branding; stacking the three short panels
+             opposite the tall one gives 784 against ~800. */
+          <div className="grid gap-5 xl:grid-cols-2 items-start">
+            <VideoDefaultsPanel key={slug} slug={slug} />
+            <div className="space-y-5">
+              <BrandingPanel slug={slug} channel={channel} />
+              <OAuthDiagnosticsPanel />
+              <ChannelManagementPanel slug={slug} channel={channel} />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

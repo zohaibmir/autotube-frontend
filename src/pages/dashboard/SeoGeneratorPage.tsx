@@ -1,9 +1,9 @@
-import React, { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Copy, CheckCheck, Loader2, RefreshCw, X, Plus } from 'lucide-react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 
-import { aiApi } from '@api/services'
+import { aiApi, channelOpsApi } from '@api/services'
 import { useToast } from '@components/Toast'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -18,7 +18,15 @@ interface SeoResult {
 }
 
 const REGIONS   = ['Global', 'US', 'UK', 'CA', 'AU', 'IN', 'PK', 'AE']
-const CATEGORIES = ['Education', 'Entertainment', 'How-to', 'News', 'Science', 'Finance', 'Health', 'Gaming', 'Travel', 'Food']
+// Fallback only, used until YouTube answers. The real list comes from /api/channel/video-categories,
+// because the assignable set differs by region — Sweden, for example, has no Nonprofits category.
+const CATEGORY_FALLBACK = [
+  { id: '27', title: 'Education' },
+  { id: '24', title: 'Entertainment' },
+  { id: '28', title: 'Science & Technology' },
+  { id: '15', title: 'Pets & Animals' },
+  { id: '22', title: 'People & Blogs' },
+]
 
 // ─── Tag chip ─────────────────────────────────────────────────────────────────
 
@@ -43,10 +51,28 @@ export default function SeoGeneratorPage() {
   const [scriptInput, setScriptInput] = useState('')
 
   const [region,    setRegion]    = useState('Global')
-  const [category,  setCategory]  = useState('Education')
+  const [categoryId, setCategoryId] = useState<string>('')
   const [result,    setResult]    = useState<SeoResult | null>(null)
   const [newTag,    setNewTag]    = useState('')
   const [copied,    setCopied]    = useState<Record<string, boolean>>({})
+
+  // Real categories for the channel's region, plus the default this channel already saves for uploads.
+  // The default is what makes this page agree with the channel's Setup tab instead of always saying
+  // "Education".
+  const { data: categoryData } = useQuery({
+    queryKey: ['video-categories', 'default'],
+    queryFn: () => channelOpsApi.videoCategories(),
+    staleTime: 60 * 60 * 1000,
+  })
+  const categories = categoryData?.categories?.length ? categoryData.categories : CATEGORY_FALLBACK
+
+  useEffect(() => {
+    if (!categoryId && categoryData) {
+      setCategoryId(categoryData.default_id || categories[0]?.id || '')
+    }
+  }, [categoryData, categoryId, categories])
+
+  const category = categories.find((c) => c.id === categoryId)?.title || 'Education'
 
   const copy = (key: string, text: string) => {
     navigator.clipboard.writeText(text)
@@ -55,41 +81,19 @@ export default function SeoGeneratorPage() {
   }
 
   const generateMutation = useMutation({
+    // No offline fallback, deliberately. This used to return a fabricated package -- three invented
+    // titles, an invented description, invented tags, and an `uploadTimingHint` that claimed to know
+    // the viewer's best upload windows -- whenever the request produced no HTTP response at all.
+    // Nothing labelled it, so it was indistinguishable from real output, and the creator's very next
+    // step is to paste it into YouTube. A network failure is a network failure: say so, let them retry.
     mutationFn: async () => {
-      try {
-        const data = await aiApi.seo({
-          topic:    topicInput.trim(),
-          script: scriptInput.trim() || undefined,
-          region:   region !== 'Global' ? region : undefined,
-          category,
-        })
-        return data as SeoResult
-      } catch (err: any) {
-        // Only fall back to a mock SEO result for genuine network/wiring
-        // failures - a real HTTP error response (e.g. 402 missing BYOK key)
-        // is re-thrown so the user sees what actually happened.
-        if (err?.response) throw err
-        const topic = topicInput.trim() || 'Your Video Topic'
-        return {
-          titles: [
-            `${topic} (The Complete Guide)`,
-            `I Tried ${topic} for 30 Days - Here's What Happened`,
-            `Why Most People Get ${topic} Wrong`,
-          ],
-          selectedTitle: `${topic} (The Complete Guide)`,
-          description:  `In this video, we explore ${topic} in depth - covering everything from the fundamentals to advanced strategies you can use today.\n\nWhether you're a complete beginner or looking to level up, this guide has you covered.\n\n📌 Chapters below\n⬇️ Subscribe for weekly content`,
-          tags:         [topic.split(' ')[0], 'YouTube', 'Tutorial', 'HowTo', 'Guide', '2026', region !== 'Global' ? region : '', category].filter(Boolean),
-          uploadTimingHint: 'Best upload windows: Tuesday 2–4 PM or Friday 12–2 PM (your audience timezone)',
-          chapters: [
-            { time: '0:00', label: 'Intro' },
-            { time: '1:30', label: 'The Core Problem' },
-            { time: '5:00', label: 'The Framework' },
-            { time: '12:00', label: 'Real Examples' },
-            { time: '18:30', label: 'Action Steps' },
-            { time: '22:00', label: 'Outro' },
-          ],
-        } satisfies SeoResult
-      }
+      const data = await aiApi.seo({
+        topic:    topicInput.trim(),
+        script:   scriptInput.trim() || undefined,
+        region:   region !== 'Global' ? region : undefined,
+        category,
+      })
+      return data as SeoResult
     },
     onSuccess: (data) => {
       setResult(data)
@@ -175,11 +179,11 @@ export default function SeoGeneratorPage() {
         <div className="flex items-center gap-2">
           <label className="text-[11px] font-medium text-[#A3A3A3] uppercase tracking-widest">Category</label>
           <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
             className="h-7 pl-2 pr-6 text-[12px] bg-[#FAFAFA] border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A] transition-colors appearance-none"
           >
-            {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+            {categories.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
           </select>
         </div>
         <button

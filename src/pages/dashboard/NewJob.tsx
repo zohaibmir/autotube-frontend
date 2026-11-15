@@ -62,7 +62,14 @@ function StepIndicator({ current }: { current: number }) {
 
 // ── Step 1: Channel ────────────────────────────────────────────────────────────
 function StepChannel({ config, setConfig }: { config: JobConfig; setConfig: (c: JobConfig) => void }) {
-  const { data: channels = [], isLoading } = useChannels()
+  const { data: allChannels = [], isLoading } = useChannels()
+  // Only channels with a working credential can actually be published to. `/api/channels` returns
+  // `auth_status` per channel, and a channel added by name but never OAuth-connected -- or one whose token
+  // was later revoked -- carries `missing`/`revoked`. Listing it here let a user pick a channel the render
+  // would fail to upload to. The Channels page still shows them all, because that is where they get
+  // reconnected.
+  const channels = allChannels.filter((ch: any) => ch.auth_status === 'ok')
+  const hasDisconnected = !isLoading && allChannels.length > 0 && channels.length === 0
   return (
     <div>
       <p className="text-xs font-medium tracking-widest text-[#A3A3A3] uppercase mb-1">Step 1</p>
@@ -72,6 +79,11 @@ function StepChannel({ config, setConfig }: { config: JobConfig; setConfig: (c: 
         <div className="flex items-center justify-center py-10">
           <Loader size={18} strokeWidth={1.5} className="text-[#D4D4D4] animate-spin" />
         </div>
+      ) : hasDisconnected ? (
+        <p className="text-sm text-[#A3A3A3] text-center py-10">
+          Your channels are not connected yet. Reconnect one in{' '}
+          <a href="/app/channels" className="text-[#0A0A0A] underline">Channels</a> first.
+        </p>
       ) : channels.length === 0 ? (
         <p className="text-sm text-[#A3A3A3] text-center py-10">
           No channels found. Add a channel in{' '}
@@ -244,7 +256,7 @@ export default function NewJob() {
         type: config.type,
       },
       {
-        onSuccess: () => navigate('/app/jobs'),
+        onSuccess: () => navigate('/app/studio'),
         onError:   () => navigate('/app/jobs'),
       }
     )

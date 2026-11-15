@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   CheckCircle2,
@@ -14,36 +14,65 @@ import {
   X,
 } from 'lucide-react'
 import { billingApi } from '@api/services'
+import { SALES_EMAIL } from '@lib/site'
+import { apiErrorMessage } from '@lib/apiError'
+import { ANIMATED_EPISODE, PLAN_CREDITS, channelLimit, channelPhrase, perMonth } from '@lib/creditCosts'
 
 // ── Plan definitions ──────────────────────────────────────────────────────────
+
+// Must match core/pricing.PLAN_PRICE_USD and core/metering.PLAN_CREDITS (§5.3).
+// Claims are limited to SHIPPED capability -- 4K, voice cloning, fine-tuning and
+// a public API are not built yet and are not advertised here.
+//
+// The credit figures come from @lib/creditCosts rather than being typed here
+// twice; `scripts/test_marketing_credit_costs.py` checks them against the backend.
+const _fmt = (n: number | null) => (n == null ? 'Unlimited' : n.toLocaleString('en-US'))
 
 const PLANS = [
   {
     id: 'free',
     name: 'Free',
     price: 0,
-    videosPerMonth: 5,
-    channels: 1,
-    features: ['5 videos / month', '1 channel', 'YouTube upload', '720p output', 'Community support'],
+    credits: `${PLAN_CREDITS.free} one-time`,
+    channels: channelLimit('free'),
+    features: [`${PLAN_CREDITS.free} credits (one-time)`, channelPhrase('free'), 'AI scripts + SEO', 'Standard voiceovers', 'Auto upload to YouTube'],
+    icon: Rocket,
+  },
+  {
+    id: 'starter',
+    name: 'Starter',
+    price: 19,
+    credits: `${_fmt(PLAN_CREDITS.starter)} / month`,
+    channels: channelLimit('starter'),
+    features: [`${_fmt(PLAN_CREDITS.starter)} credits / month`, channelPhrase('starter'), 'Premium AI voice (ElevenLabs)', 'Vertical Shorts', 'Credits roll over 1 month'],
     icon: Rocket,
   },
   {
     id: 'pro',
     name: 'Pro',
     price: 49,
-    videosPerMonth: 50,
-    channels: 5,
-    features: ['50 videos / month', '5 channels', 'All social platforms', '1080p output', 'Analytics', 'Priority support'],
+    credits: `${_fmt(PLAN_CREDITS.pro)} / month`,
+    channels: channelLimit('pro'),
+    features: [`${_fmt(PLAN_CREDITS.pro)} credits / month`, channelPhrase('pro'), 'Animated kids episodes', 'Scheduler, queue & calendar', 'Analytics + auto-post Reels to IG, FB & TikTok'],
     icon: Zap,
     recommended: true,
   },
   {
-    id: 'enterprise',
-    name: 'Enterprise',
+    id: 'studio',
+    name: 'Studio',
+    price: 99,
+    credits: `${_fmt(PLAN_CREDITS.studio)} / month`,
+    channels: channelLimit('studio'),
+    features: [`${_fmt(PLAN_CREDITS.studio)} credits / month`, channelPhrase('studio'), `~${perMonth('studio', ANIMATED_EPISODE.defaultCredits)} animated episodes`, 'Custom Studio (own clips)', 'Character profiles'],
+    icon: Zap,
+  },
+  {
+    id: 'agency',
+    name: 'Agency',
     price: null,
-    videosPerMonth: Infinity,
-    channels: Infinity,
-    features: ['Unlimited videos', 'Unlimited channels', 'Custom voice clone', 'API access', 'Dedicated manager', 'SLA guarantee'],
+    credits: `${_fmt(PLAN_CREDITS.agency)} / month`,
+    channels: channelLimit('agency'),
+    features: [`${_fmt(PLAN_CREDITS.agency)} credits / month`, channelPhrase('agency'), 'Onboarding', 'Priority support'],
     icon: Building2,
   },
 ] as const
@@ -154,7 +183,7 @@ function PlanCard({
         </div>
       ) : plan.price === null ? (
         <a
-          href="mailto:hello@vidora.ai?subject=Enterprise plan enquiry"
+          href={`mailto:${SALES_EMAIL}?subject=Enterprise plan enquiry`}
           className="flex items-center justify-center gap-1.5 w-full py-2 rounded-md border border-[#0A0A0A] text-xs font-medium text-[#0A0A0A] hover:bg-[#F5F5F5] transition-colors"
         >
           Contact Sales <ArrowRight size={12} strokeWidth={1.5} />
@@ -191,6 +220,7 @@ function Skeleton({ className = '' }: { className?: string }) {
 export default function Billing() {
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null)
   const [portalLoading, setPortalLoading] = useState(false)
+  const [loadingTopup, setLoadingTopup] = useState<string | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   // Parse Stripe redirect query params
@@ -198,6 +228,9 @@ export default function Billing() {
   const stripeSuccess = params.get('success') === '1'
   const stripeCanceled = params.get('canceled') === '1'
   const upgradedPlan = params.get('plan')
+  // One-off top-up return: /app/billing?topup=1&credits=300
+  const topupSuccess = params.get('topup') === '1'
+  const topupCredits = params.get('credits')
 
   const { data: me, isLoading } = useQuery({
     queryKey: ['billing-me'],
@@ -206,16 +239,38 @@ export default function Billing() {
   })
 
   const planId: string = me?.plan ?? 'free'
-  const videosUsed: number = me?.videos_used_this_month ?? 0
-  const videosLimit: number = me?.videos_limit ?? 5
+  // `videos_used_this_month` / `videos_limit` are gone: credits are the
+  // currency, and nothing increments or reads the video counter any more.
   const channels: any[] = me?.channels ?? []
   const isPaidPlan = planId !== 'free'
+
+  // W8/W9: credits are the real currency, so the page leads with them.
+  const { data: creditsUsage } = useQuery({
+    queryKey: ['billing-usage'],
+    queryFn: () => billingApi.usage(),
+    staleTime: 30_000,
+  })
+  const creditsRemaining = creditsUsage?.credits_remaining ?? null
+  const planCredits = creditsUsage?.plan_credits ?? null
+  const creditsTopup = creditsUsage?.credits_topup ?? 0
+  const creditsUsed = (creditsRemaining != null && planCredits != null)
+    ? Math.max(0, planCredits - creditsRemaining)
+    : null
+
+  // Top-up packages. Empty is a normal state (no Stripe price IDs configured);
+  // `stripe_configured` tells us whether to explain why.
+  const { data: topupData } = useQuery({
+    queryKey: ['billing-packages'],
+    queryFn: () => billingApi.packages(),
+    staleTime: 5 * 60_000,
+  })
+  const topupPackages = topupData?.packages ?? []
 
   const currentPlan = PLANS.find((p) => p.id === planId) ?? PLANS[0]
 
   async function handleUpgrade(targetPlanId: string) {
-    if (targetPlanId === 'enterprise') {
-      window.location.href = 'mailto:hello@vidora.ai?subject=Enterprise plan enquiry'
+    if (targetPlanId === 'agency') {
+      window.location.href = `mailto:${SALES_EMAIL}?subject=Agency plan enquiry`
       return
     }
     setLoadingPlan(targetPlanId)
@@ -224,8 +279,20 @@ export default function Billing() {
       const { checkout_url } = await billingApi.checkout(targetPlanId)
       window.location.href = checkout_url
     } catch (err: any) {
-      setErrorMsg(err?.response?.data?.detail ?? 'Could not start checkout. Try again.')
+      setErrorMsg(apiErrorMessage(err, 'Could not start checkout. Try again.'))
       setLoadingPlan(null)
+    }
+  }
+
+  async function handleTopup(packageId: string) {
+    setLoadingTopup(packageId)
+    setErrorMsg(null)
+    try {
+      const { checkout_url } = await billingApi.topup(packageId)
+      window.location.href = checkout_url
+    } catch (err: any) {
+      setErrorMsg(apiErrorMessage(err, 'Could not start top-up checkout. Try again.'))
+      setLoadingTopup(null)
     }
   }
 
@@ -236,7 +303,7 @@ export default function Billing() {
       const { portal_url } = await billingApi.portal()
       window.location.href = portal_url
     } catch (err: any) {
-      setErrorMsg(err?.response?.data?.detail ?? 'Could not open billing portal. Try again.')
+      setErrorMsg(apiErrorMessage(err, 'Could not open billing portal. Try again.'))
       setPortalLoading(false)
     }
   }
@@ -279,6 +346,14 @@ export default function Billing() {
             <p className="text-[13px] text-[#C2410C]">Checkout was canceled - your plan has not changed.</p>
           </div>
         )}
+        {topupSuccess && (
+          <div className="mt-4 flex items-center gap-2.5 px-4 py-3 bg-[#F0FDF4] border border-[#BBF7D0] rounded-md">
+            <CheckCircle2 size={15} strokeWidth={1.5} className="text-[#16A34A] flex-shrink-0" />
+            <p className="text-[13px] text-[#15803D] font-medium">
+              Top-up complete{topupCredits ? ` - ${topupCredits} credits added` : ''}. They're in your balance now and never expire.
+            </p>
+          </div>
+        )}
         {errorMsg && (
           <div className="mt-4 flex items-center justify-between gap-2.5 px-4 py-3 bg-[#FEF2F2] border border-[#FECACA] rounded-md">
             <div className="flex items-center gap-2">
@@ -316,6 +391,9 @@ export default function Billing() {
                         Current Plan
                       </p>
                       <h2 className="text-2xl font-semibold text-[#0A0A0A]">{currentPlan.name}</h2>
+                      <p className="text-[12px] font-medium text-[#0369A1] mt-1">
+                        {currentPlan.credits} credits
+                      </p>
                     </div>
                     <span className="text-2xl font-semibold text-[#0A0A0A]">
                       {currentPlan.price === 0
@@ -359,12 +437,87 @@ export default function Billing() {
                 </div>
               ) : (
                 <div className="space-y-5">
-                  <UsageBar label="Videos generated" used={videosUsed} limit={videosLimit} />
+                  {/* Credits first: they are what actually gates rendering. The
+                      older "Videos generated" bar was driven by
+                      videos_used_this_month, which nothing increments any more,
+                      so it always read 0. */}
+                  {creditsRemaining != null ? (
+                    <UsageBar
+                      label={`Credits used (${planCredits ?? 0}/period)`}
+                      used={creditsUsed ?? 0}
+                      limit={planCredits ?? 0}
+                    />
+                  ) : (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-[#525252]">Credits</span>
+                      <span className="text-sm font-medium text-[#0A0A0A]">Unlimited</span>
+                    </div>
+                  )}
+                  {creditsTopup > 0 && (
+                    <div className="flex items-center justify-between text-[13px]">
+                      <span className="text-[#525252]">Purchased credits</span>
+                      <span className="font-medium text-[#0A0A0A]">
+                        {creditsTopup.toLocaleString()}{' '}
+                        <span className="text-[#A3A3A3] font-normal">(never expire)</span>
+                      </span>
+                    </div>
+                  )}
                   <UsageBar
                     label="Channels connected"
                     used={channels.length}
-                    limit={currentPlan.channels === Infinity ? Infinity : currentPlan.channels}
+                    limit={
+                      creditsUsage?.channels_limit != null
+                        ? creditsUsage.channels_limit
+                        : (currentPlan.channels === Infinity ? Infinity : currentPlan.channels)
+                    }
                   />
+                </div>
+              )}
+            </div>
+
+            {/* Credit top-ups */}
+            <div className="bg-white border border-[#E5E5E5] rounded-md p-6">
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[11px] font-medium tracking-widest text-[#A3A3A3] uppercase">
+                  Buy credits
+                </p>
+                {creditsTopup > 0 && (
+                  <span className="text-[11px] text-[#A3A3A3]">
+                    {creditsTopup.toLocaleString()} purchased
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-[#A3A3A3] mb-4">
+                One-off credit packs. They never expire, and they are only spent once your
+                monthly allowance runs out - so a renewal can never wipe credits you paid for.
+              </p>
+              {topupPackages.length === 0 ? (
+                <p className="text-[13px] text-[#A3A3A3]">
+                  {topupData && !topupData.stripe_configured
+                    ? 'Credit top-ups are not available yet on this deployment.'
+                    : 'No credit packs are available right now.'}
+                </p>
+              ) : (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {topupPackages.map((pkg) => (
+                    <button
+                      key={pkg.id}
+                      onClick={() => handleTopup(pkg.id)}
+                      disabled={loadingTopup !== null}
+                      className="text-left p-4 rounded-md border border-[#E5E5E5] hover:border-[#0A0A0A] transition-colors disabled:opacity-40"
+                    >
+                      <p className="text-sm font-semibold text-[#0A0A0A]">
+                        {pkg.credits.toLocaleString()}
+                      </p>
+                      <p className="text-[11px] text-[#A3A3A3] mb-2">credits</p>
+                      <p className="text-[13px] text-[#525252] flex items-center gap-1.5">
+                        {loadingTopup === pkg.id
+                          ? <Loader2 size={12} strokeWidth={1.5} className="animate-spin" />
+                          : <Zap size={12} strokeWidth={1.5} />}
+                        ${pkg.price_usd.toFixed(2)}
+                      </p>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>

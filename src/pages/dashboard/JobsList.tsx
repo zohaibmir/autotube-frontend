@@ -4,6 +4,7 @@ import { Plus, Search, CheckCircle, XCircle, Loader, Clock, Eye, RotateCcw, X, C
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useJobs, useJobAction } from '@hooks/useJobs'
 import { jobsApi } from '@api/services'
+import { useToast } from '@components/Toast'
 
 const PAGE_SIZE = 25
 
@@ -22,6 +23,10 @@ export default function JobsList() {
   const [statusFilter, setStatusFilter] = useState<Status>('all')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  // Deleting is the only irreversible action on this page, so it is two-step: the first click arms it and
+  // says exactly what will and will not be removed.
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const toast = useToast()
 
   const { data: allJobs = [], isLoading } = useJobs({
     search: search || undefined,
@@ -43,6 +48,19 @@ export default function JobsList() {
       queryClient.invalidateQueries({ queryKey: ['pipeline-lock-status'], exact: false })
       queryClient.invalidateQueries({ queryKey: ['jobs'], exact: false })
     },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (ids: string[]) => jobsApi.deleteMany(ids),
+    onSuccess: (r) => {
+      const skipped = r.skipped?.length ?? 0
+      toast.success(`Deleted ${r.deleted} job${r.deleted === 1 ? '' : 's'}${skipped ? ` — ${skipped} skipped` : ''}`)
+      setSelected(new Set())
+      setConfirmDelete(false)
+      queryClient.invalidateQueries({ queryKey: ['jobs'], exact: false })
+      queryClient.invalidateQueries({ queryKey: ['pipeline-lock-status'], exact: false })
+    },
+    onError: () => toast.error('Delete failed — nothing was removed'),
   })
 
   // pipeline_status() returns { running, running_count, jobs, pid } - there is no
@@ -91,6 +109,13 @@ export default function JobsList() {
   const selectedRetryable = [...selected].filter((id) => {
     const j = (allJobs as any[]).find((x) => x.job_id === id)
     return j?.status === 'error' || j?.status === 'interrupted'
+  })
+  // Running jobs are excluded here as well as server-side: the button must not promise something the
+  // endpoint will refuse.
+  const selectedDeletable = [...selected].filter((id) => {
+    const j = (allJobs as any[]).find((x) => x.job_id === id)
+    return j && !['running', 'processing', 'pending', 'queued']
+      .includes(String(j.status || '').toLowerCase())
   })
 
   return (
@@ -183,8 +208,39 @@ export default function JobsList() {
                   <Trash2 size={12} strokeWidth={1.5} /> Cancel ({selectedCancellable.length})
                 </button>
               )}
+              {selectedDeletable.length > 0 && (
+                confirmDelete ? (
+                  <span className="inline-flex items-center gap-2">
+                    <span className="text-[11px] text-white/60 hidden sm:inline">
+                      Record only — videos stay
+                    </span>
+                    <button
+                      onClick={() => deleteMutation.mutate(selectedDeletable)}
+                      disabled={deleteMutation.isPending}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-red-500 hover:bg-red-400 text-xs font-medium transition-colors disabled:opacity-50"
+                    >
+                      <Trash2 size={12} strokeWidth={1.5} />
+                      {deleteMutation.isPending ? 'Deleting…' : `Confirm delete (${selectedDeletable.length})`}
+                    </button>
+                    <button
+                      onClick={() => setConfirmDelete(false)}
+                      className="text-xs text-white/60 hover:text-white transition-colors"
+                    >
+                      Keep
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => setConfirmDelete(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white/10 hover:bg-red-500/80 text-xs font-medium transition-colors"
+                    title="Removes the job record. Published videos and rendered files are not touched."
+                  >
+                    <Trash2 size={12} strokeWidth={1.5} /> Delete ({selectedDeletable.length})
+                  </button>
+                )
+              )}
               <button
-                onClick={() => setSelected(new Set())}
+                onClick={() => { setSelected(new Set()); setConfirmDelete(false) }}
                 className="inline-flex items-center gap-1 text-xs text-white/60 hover:text-white transition-colors"
               >
                 <X size={12} strokeWidth={1.5} /> Clear

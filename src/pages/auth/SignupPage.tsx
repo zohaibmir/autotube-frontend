@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Eye, EyeOff, Loader, CheckCircle2, Zap } from 'lucide-react'
+import { Eye, EyeOff, Loader, CheckCircle2 } from 'lucide-react'
+import Logo from '@components/Logo'
 import { useAuthStore } from '@store/auth'
 
 export default function SignupPage() {
@@ -39,11 +40,8 @@ export default function SignupPage() {
   return (
     <div className="min-h-screen bg-[#FAFAFA] flex flex-col">
       <header className="px-8 py-5 flex items-center justify-between border-b border-[#E5E5E5] bg-white">
-        <Link to="/" className="flex items-center gap-2 text-[#0A0A0A] font-semibold text-sm">
-          <div className="w-6 h-6 bg-[#0A0A0A] rounded-md flex items-center justify-center">
-            <Zap size={12} strokeWidth={2} className="text-white" />
-          </div>
-          Channelpilot
+        <Link to="/" aria-label="Vidora home" className="flex items-center">
+          <Logo size={24} wordmarkSize={15} />
         </Link>
         <p className="text-sm text-[#A3A3A3]">
           Have an account?{' '}

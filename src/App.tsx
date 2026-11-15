@@ -1,55 +1,70 @@
-import React, { useEffect } from 'react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import { useAuthStore } from '@store/auth'
+import { lazy, Suspense, useEffect } from 'react'
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { tokenStore } from '@lib/tokenStore'
+import { captureException } from '@sentry/react'
 import './index.css'
 
-// Public Pages
-import HomePage from './pages/HomePage'
-import HowItWorksPage from './pages/HowItWorksPage'
-import PricingPage from './pages/PricingPage'
-import AboutPage from './pages/AboutPage'
-import ContactPage from './pages/ContactPage'
-import FAQPage from './pages/FAQPage'
-import SeoAnalyzerPage from './pages/SeoAnalyzerPage'
-import BlogListPage from './pages/BlogListPage'
-import BlogPostPage from './pages/BlogPostPage'
+import { PUBLIC_ROUTES } from './PublicRoutes'
+import NotFoundPage from './pages/NotFoundPage'
+import SEO from '@components/SEO'
+import CookieBanner from '@components/CookieBanner'
 
 // Auth Pages
-import LoginPage from './pages/auth/LoginPage'
-import SignupPage from './pages/auth/SignupPage'
+const LoginPage = lazy(() => import('./pages/auth/LoginPage'))
+const SignupPage = lazy(() => import('./pages/auth/SignupPage'))
+const ForgotPasswordPage = lazy(() => import('./pages/auth/ForgotPasswordPage'))
+const ResetPasswordPage = lazy(() => import('./pages/auth/ResetPasswordPage'))
 
 // App Dashboard
-import DashboardPage from './pages/DashboardPage'
+const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 import ProtectedRoute from './components/ProtectedRoute'
 
-function App() {
-  const syncSession = useAuthStore((s) => s.syncSession)
+const loadingWorkspace = <main className="min-h-screen flex items-center justify-center" role="status">Loading your workspace...</main>
 
+function PrivateSEO() {
+  const { pathname } = useLocation()
+  if (!/^\/app(?:\/|$)/.test(pathname) && !['/login', '/signup', '/forgot-password', '/reset-password'].includes(pathname)) {
+    return null
+  }
+  return <SEO title="Your workspace" noIndex />
+}
+
+function App() {
   useEffect(() => {
-    // Rehydrate from localStorage and silently verify with /api/auth/me
-    syncSession()
+    async function syncSession() {
+      try {
+        if (!tokenStore.hasToken() && !tokenStore.getUser()) return
+        const { useAuthStore } = await import('@store/auth')
+        await useAuthStore.getState().syncSession()
+      } catch (error) {
+        captureException(error)
+        console.error('Unable to synchronize your session.', error)
+      }
+    }
+    void syncSession()
   }, [])
 
   return (
     <BrowserRouter>
+      <PrivateSEO />
       <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/how-it-works" element={<HowItWorksPage />} />
-        <Route path="/pricing" element={<PricingPage />} />
-        <Route path="/about" element={<AboutPage />} />
-        <Route path="/contact" element={<ContactPage />} />
-        <Route path="/faq" element={<FAQPage />} />
-        <Route path="/blog" element={<BlogListPage />} />
-        <Route path="/blog/:slug" element={<BlogPostPage />} />
-        <Route path="/tools/seo-analyzer" element={<SeoAnalyzerPage />} />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/signup" element={<SignupPage />} />
+        {PUBLIC_ROUTES.map((route) => <Route key={route.path} {...route} />)}
+        <Route path="/login" element={<Suspense fallback={loadingWorkspace}><LoginPage /></Suspense>} />
+        <Route path="/signup" element={<Suspense fallback={loadingWorkspace}><SignupPage /></Suspense>} />
+        {/* Password recovery. LoginPage links to /forgot-password; Supabase's
+            recovery email redirects to /reset-password. */}
+        <Route path="/forgot-password" element={<Suspense fallback={loadingWorkspace}><ForgotPasswordPage /></Suspense>} />
+        <Route path="/reset-password" element={<Suspense fallback={loadingWorkspace}><ResetPasswordPage /></Suspense>} />
         <Route path="/app/*" element={
           <ProtectedRoute>
-            <DashboardPage />
+            <Suspense fallback={loadingWorkspace}><DashboardPage /></Suspense>
           </ProtectedRoute>
         } />
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
+      {/* Shown on every route until the user decides, including the dashboard —
+          consent has to be collected wherever non-essential storage might run. */}
+      <CookieBanner />
     </BrowserRouter>
   )
 }

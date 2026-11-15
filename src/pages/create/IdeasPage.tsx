@@ -1,11 +1,12 @@
 import React, { useState, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Sparkles, TrendingUp, Leaf, Newspaper, Pen, ChevronRight, Bookmark, BookmarkCheck, Loader2, AlertCircle, RefreshCw, ListPlus, Check } from 'lucide-react'
+import { Sparkles, TrendingUp, Leaf, Newspaper, Pen, ChevronRight, Bookmark, BookmarkCheck, AlertCircle, RefreshCw, ListPlus, Check } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { useCreateStore, type TopicIdea } from '@store/create'
 import { useChannels } from '@hooks/useJobs'
 import { aiApi, queueApi } from '@api/services'
 import { useToast } from '@components/Toast'
+import { apiErrorMessage } from '@lib/apiError'
 import { useAuthStore } from '@store/auth'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -149,29 +150,6 @@ function DetailPanel({ idea, onUse }: { idea: TopicIdea; onUse: () => void }) {
   )
 }
 
-// ─── Mock topic generator (fallback when API not available) ───────────────────
-
-function buildMockTopics(type: TopicType, channel: string): TopicIdea[] {
-  const bases = {
-    viral:     ['10 AI Tools That Will Replace Your Job in 2026', 'Why Everyone Is Quitting Social Media', 'The Brutal Truth About Online Business'],
-    evergreen: ['How to Build a Morning Routine That Actually Works', 'The Science of Getting Rich', 'Why Most People Never Achieve Their Goals'],
-    news:      ['Breaking: New AI Model Beats GPT-5 on Every Benchmark', 'YouTube Changes Its Algorithm Again - What You Need to Know', 'Tech Layoffs 2026: The Real Reason Behind the Cuts'],
-    custom:    ['Your Custom Topic Here - Type in the box below', 'Untapped Niche: Nobody Is Talking About This', 'Deep Dive: The Subject Your Audience Actually Wants'],
-  }
-  return bases[type].map((topic, i) => ({
-    id:            `mock-${type}-${i}`,
-    topic,
-    score:         [82, 71, 65][i] ?? 60,
-    type,
-    angle:         'A compelling angle that hooks viewers in the first 5 seconds and delivers high retention throughout.',
-    hook:          "Did you know that 90% of people who try this fail? Here's the one thing that actually works...",
-    thumbnailText: topic.split(':')[0].toUpperCase().slice(0, 30),
-    shortsAngle:   `Quick version: ${topic.slice(0, 50)}...`,
-    cpmEstimate:   ['$8–12', '$12–18', '$6–10'][i] ?? '$8–12',
-    competition:   (['low', 'medium', 'high'][i] ?? 'medium') as 'low' | 'medium' | 'high',
-  }))
-}
-
 // ─── Ideas Page ───────────────────────────────────────────────────────────────
 
 export default function IdeasPage() {
@@ -230,31 +208,24 @@ export default function IdeasPage() {
     } catch {}
   }, [bookmarks, _bmKey])
 
-  // Fetch ideas via API (falls back to mock only when the endpoint is
-  // genuinely unreachable - real API errors, e.g. 402 Payment Required when
-  // no BYOK/Anthropic key is configured, are surfaced to the user instead of
-  // being silently replaced with fake placeholder topics).
+  // Fetch ideas via the API. There is no offline fallback, deliberately: it used to invent three
+  // topic ideas -- each with a fabricated `score`, an invented `cpmEstimate` ("$8-12") and an invented
+  // `competition` rating -- whenever the request produced no HTTP response, and again whenever the API
+  // succeeded but returned an empty list. Nothing labelled them, so they were indistinguishable from
+  // real ideas and one click from becoming a rendered video. A failure is reported instead.
   const generateMutation = useMutation({
     mutationFn: async () => {
-      let result: any
-      try {
-        result = await aiApi.trending({
-          channel_slug:  channelSlug || undefined,
-          recency,
-          content_type:  contentType,
-          count:         9,
-        })
-      } catch (err: any) {
-        // Only fall back to mock data when the request never reached a real
-        // API response (e.g. endpoint not wired / network failure). A real
-        // HTTP error response (401/402/403/500...) means the backend is
-        // there and rejected the request for a real reason - surface it.
-        if (err?.response) throw err
-        return buildMockTopics(topicType, channelSlug)
-      }
+      const result: any = await aiApi.trending({
+        channel_slug:  channelSlug || undefined,
+        recency,
+        content_type:  contentType,
+        count:         9,
+      })
       // Normalise API response shape (backend may return {topics: [...]} or just [...])
       const raw: any[] = Array.isArray(result) ? result : (result.topics ?? [])
-      if (!raw.length) return buildMockTopics(topicType, channelSlug)
+      // An empty list is a real answer ("nothing found for this filter"), not a reason to invent one.
+      // The page's own empty state says so.
+      if (!raw.length) return []
       return raw.map((t: any, i: number): TopicIdea => ({
         id:            t.id ?? `api-${i}`,
         topic:         t.topic ?? t.title ?? t.text ?? String(t),
@@ -294,7 +265,7 @@ export default function IdeasPage() {
       setQueued((prev) => new Set([...prev, idea.id]))
       toast.success(`"${idea.topic.slice(0, 45)}${idea.topic.length > 45 ? '…' : ''}" added to queue`)
     } catch (err: any) {
-      toast.error(err?.response?.data?.detail ?? 'Failed to add to queue')
+      toast.error(apiErrorMessage(err, 'Failed to add to queue'))
     }
   }, [channelSlug, toast])
 

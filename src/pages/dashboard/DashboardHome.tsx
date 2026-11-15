@@ -3,11 +3,12 @@ import { Link } from 'react-router-dom'
 import {
   Video, Upload, AlertCircle, Activity, Plus, ArrowRight,
   Clock, CheckCircle, XCircle, Loader, Zap, ChevronRight,
-  Sparkles, ListOrdered, PenLine, X, Check, PartyPopper,
+  Sparkles, ListOrdered, PenLine, X, Check, PartyPopper, RefreshCw,
+  Search,
 } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useJobs, usePipelineStatus, useChannels } from '@hooks/useJobs'
-import { byokApi } from '@api/services'
+import { byokApi, analyticsApi } from '@api/services'
 import { useAuthStore } from '@store/auth'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -30,6 +31,19 @@ const STATUS_ICON: Record<string, React.ReactNode> = {
 function topicLabel(job: any) {
   return job.topic?.replace(/^\[Short\]\s*/i, '') || job.job_id || '—'
 }
+// "3h ago" plus a staleness flag. Older than 48h means the dashboard is describing an old week — the exact
+// condition the fleet sync exists to prevent, so it renders amber instead of quietly looking fine.
+function syncAge(iso: string | null): { label: string; stale: boolean } {
+  if (!iso) return { label: 'never', stale: true }
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return { label: 'never', stale: true }
+  const mins = Math.max(0, Math.round((Date.now() - t) / 60000))
+  const label = mins < 60 ? `${mins}m ago`
+    : mins < 1440 ? `${Math.round(mins / 60)}h ago`
+      : `${Math.round(mins / 1440)}d ago`
+  return { label, stale: mins > 48 * 60 }
+}
+
 function isShortJob(job: any) {
   // Matches "[Short] ..." as well as prefixed variants like
   // "Shorts pipeline rerun: [Short] ..." (job.topic gets a rerun prefix
@@ -130,15 +144,34 @@ function OnboardingChecklist({
 export default function DashboardHome() {
   const user     = useAuthStore((s) => s.user)
   const userId   = user?.id ?? 'anon'
+  const queryClient = useQueryClient()
 
   const { data: allJobs = [], isLoading } = useJobs()
   const { data: pipeline }                = usePipelineStatus()
   const { data: channels = [] }           = useChannels()
-  const { data: byokStatus }              = useQuery({
-    queryKey: ['byok-status'],
-    queryFn: () => byokApi.status(),
+  // `keys` = what the account has stored; `readiness` = what will actually work (R4/F1).
+  const { data: providerReadiness = {} }  = useQuery({
+    queryKey: ['byok-readiness'],
+    queryFn: () => byokApi.readiness(),
     staleTime: 120_000,
   })
+
+  // Per-channel sync health. The fleet sync runs server-side; this panel is how a creator finds out it
+  // worked, and how an admin notices the one channel whose token expired.
+  const { data: fleet, isLoading: fleetLoading } = useQuery({
+    queryKey: ['fleet-health'],
+    queryFn: () => analyticsApi.fleet(),
+    staleTime: 60_000,
+  })
+  const fleetSync = useMutation({
+    mutationFn: () => analyticsApi.syncAll(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['fleet-health'] })
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+    },
+  })
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin'
+  const fleetChannels = fleet?.channels ?? []
 
   const jobs       = allJobs as any[]
   const isActive   = pipeline?.status === 'running'
@@ -178,12 +211,51 @@ export default function DashboardHome() {
   }
 
   // ── Checklist steps ───────────────────────────────────────────────────────
+  //
+  // Two corrections here, both from PRODUCT_IMPROVEMENT_DEEP_ANALYSIS (F1, F2/R4).
+  //
+  // F1: `hasApiKey` was `Object.values(byokStatus).some(Boolean)` — "is *any* provider key stored". A
+  // stored **Pexels** key satisfied a step labelled "Add your Anthropic API key", and a customer whose
+  // work the platform funds was told to supply a key they did not need. Readiness asks the question the
+  // label asks: can *Anthropic* be used, on the account's key or the platform's?
+  //
+  // F2: the publish step and the celebration banner were driven by `doneJobs > 0` — a completed *render*
+  // — and the banner said "First video published". Nothing in the system records an upload's privacy
+  // (public / unlisted / private); the strongest evidence available is a job carrying a `youtube_id`,
+  // which means uploaded. So the step and the banner now say "uploaded", and the third rung is not
+  // claimed because it cannot be evidenced.
   const hasChannel  = (channels as any[]).length > 0
-  const hasApiKey   = byokStatus
-    ? Object.values(byokStatus).some(Boolean)
-    : false
+  const anthropicReadiness = providerReadiness['anthropic']
+  const hasApiKey   = anthropicReadiness?.usable === true
   const hasRunJob   = totalJobs > 0
-  const hasFinished = doneJobs > 0
+  // A render finished. Not the same as a video being on YouTube.
+  const hasCreated  = doneJobs > 0
+  // The render reached YouTube. `youtube_id` is written when the upload succeeds.
+  const hasUploaded = jobs.some((j: any) => !!j.youtube_id)
+
+  const providerNote = !anthropicReadiness
+    ? 'Powers script generation and idea scoring'
+    : anthropicReadiness.usable && anthropicReadiness.funding === 'platform'
+      ? 'Included with your plan — no key needed'
+      : anthropicReadiness.usable
+        ? 'Using your own key'
+        // The readiness answer now names the *specific* fix (R4 criterion 2): "add your own key" when this
+        // deployment cannot provide one, "top up credits" when it can but the balance cannot cover it. The
+        // old copy offered both and called it one state.
+        : (anthropicReadiness.why || 'Needed for script generation — add one, or top up credits')
+
+  // R4 criterion 1: a bundled-credit user must not be told to add a key. The readiness answer now says *which*
+  // of the four situations applies, so this step's wording follows it instead of describing every user's
+  // problem at once. Before this, the label read "Give Vidora a way to write scripts" even when the plan
+  // already provided one — an unnecessary BYOK instruction for exactly the cohort that needs nothing.
+  const anthropicState = anthropicReadiness?.state
+  const scriptStep = anthropicState === 'platform'
+    ? { label: 'Scripts are included with your plan', sub: 'No key needed — nothing to set up' }
+    : anthropicState === 'user_key'
+      ? { label: 'Using your own Anthropic key', sub: 'Your key pays for script generation' }
+      : anthropicState === 'needs_credits'
+        ? { label: 'Top up credits, or add your own key', sub: providerNote }
+        : { label: 'Give Vidora a way to write scripts', sub: providerNote }
 
   const checklistSteps: ChecklistStep[] = [
     {
@@ -202,8 +274,10 @@ export default function DashboardHome() {
     },
     {
       id:    'apikey',
-      label: 'Add your Anthropic API key',
-      sub:   'Powers script generation and idea scoring',
+      // The wording follows the readiness state (R4 criterion 1/2), so a bundled user sees "included" and a
+      // short-balance user sees "top up" rather than everyone being told to add a key.
+      label: scriptStep.label,
+      sub:   scriptStep.sub,
       done:  hasApiKey,
       href:  '/app/settings',
     },
@@ -216,16 +290,18 @@ export default function DashboardHome() {
     },
     {
       id:    'publish',
-      label: 'Publish your first video',
-      sub:   'Your pipeline will upload it to YouTube automatically',
-      done:  hasFinished,
+      // "Publish" overclaimed: the pipeline uploads, and the upload's privacy is not recorded anywhere,
+      // so this step cannot tell a public video from a private one.
+      label: 'Upload your first video to YouTube',
+      sub:   'Your pipeline uploads it automatically when the render finishes',
+      done:  hasUploaded,
       href:  '/app/jobs',
     },
   ]
 
   const allStepsDone      = checklistSteps.every((s) => s.done)
   const showChecklist     = !checklistDismissed && !allStepsDone
-  const showFirstVidBanner = doneJobs > 0 && !firstVideoCelebrated
+  const showFirstVidBanner = hasCreated && !firstVideoCelebrated
 
   const stats = [
     { label: 'Total Jobs',  value: String(totalJobs),  sub: `${doneJobs} completed`,  icon: <Video      size={16} strokeWidth={1.5} /> },
@@ -251,12 +327,23 @@ export default function DashboardHome() {
           <h1 className="text-lg font-semibold text-[#0A0A0A]">Dashboard</h1>
           <p className="text-sm text-[#A3A3A3] mt-0.5">Overview of your automation workspace.</p>
         </div>
-        <Link
-          to="/app/jobs/new"
-          className="bg-[#0A0A0A] hover:bg-[#262626] text-white px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-colors"
-        >
-          <Plus size={14} strokeWidth={1.5} /> New Job
-        </Link>
+        <div className="flex items-center gap-2">
+          {/* R4: the two intents, side by side. "Create" needs a channel and a provider; "Improve" must not
+              — a public-video score should be reachable without either, which is why it links to the public
+              analyzer rather than to the create wizard. */}
+          <Link
+            to="/tools/seo-analyzer"
+            className="border border-[#E5E5E5] text-[#0A0A0A] hover:bg-[#FAFAFA] px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-colors"
+          >
+            <Search size={14} strokeWidth={1.5} /> Improve a video
+          </Link>
+          <Link
+            to="/app/jobs/new"
+            className="bg-[#0A0A0A] hover:bg-[#262626] text-white px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-colors"
+          >
+            <Plus size={14} strokeWidth={1.5} /> New Job
+          </Link>
+        </div>
       </div>
 
       {/* Onboarding checklist - only shown until dismissed or all complete */}
@@ -267,15 +354,30 @@ export default function DashboardHome() {
         />
       )}
 
-      {/* First-video celebration banner */}
+      {/* First-render banner. The heading used to read "First video published" while being driven by a
+          finished render — a video that may not have been uploaded at all. It now says which of the two
+          actually happened. */}
       {showFirstVidBanner && (
         <div className="bg-[#F0FDF4] border border-[#BBF7D0] rounded-md px-5 py-4 flex items-start gap-3">
           <PartyPopper size={18} strokeWidth={1.5} className="text-[#16A34A] flex-shrink-0 mt-0.5" />
           <div className="flex-1">
-            <p className="text-[13px] font-semibold text-[#15803D]">First video published - nice work!</p>
-            <p className="text-[12px] text-[#166534] mt-0.5">
-              Your automation pipeline is running. Keep the queue full to grow your channel consistently.
-            </p>
+            {hasUploaded ? (
+              <>
+                <p className="text-[13px] font-semibold text-[#15803D]">Your first video is on YouTube</p>
+                <p className="text-[12px] text-[#166534] mt-0.5">
+                  The pipeline rendered it and uploaded it. Keep the queue full to grow your channel
+                  consistently - check the Jobs page for the link.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-[13px] font-semibold text-[#15803D]">Your first video is rendered</p>
+                <p className="text-[12px] text-[#166534] mt-0.5">
+                  It has not been uploaded to YouTube yet. Open the Jobs page to publish it, or check
+                  that your channel is still connected.
+                </p>
+              </>
+            )}
           </div>
           <button
             onClick={dismissFirstVideo}
@@ -385,6 +487,115 @@ export default function DashboardHome() {
             <p className="text-[11px] text-[#A3A3A3] mt-0.5">Generate script, SEO + thumbnail</p>
           </div>
         </Link>
+      </div>
+
+      {/* Channel health — the fleet sync's answer, per channel */}
+      <div className="bg-white border border-[#E5E5E5] rounded-md overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-[#E5E5E5] flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-semibold text-[#0A0A0A]">Channel health</h2>
+            <p className="text-[11px] text-[#A3A3A3] mt-0.5">
+              Whether each channel&apos;s dashboard is showing current numbers.
+            </p>
+          </div>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {fleetSync.isSuccess && !fleetSync.isPending && (
+              <span className="text-[11px] text-[#16A34A]">
+                Synced {fleetSync.data.channels} channel{fleetSync.data.channels === 1 ? '' : 's'}
+                {fleetSync.data.failed?.length ? `, ${fleetSync.data.failed.length} failed` : ''}
+              </span>
+            )}
+            {isAdmin && (
+              <button
+                onClick={() => fleetSync.mutate()}
+                disabled={fleetSync.isPending}
+                className="h-8 px-3 text-[12px] font-medium bg-white border border-[#E5E5E5] rounded hover:border-[#D4D4D4] transition-colors disabled:opacity-40 flex items-center gap-1.5"
+              >
+                {fleetSync.isPending
+                  ? <Loader size={12} strokeWidth={1.5} className="animate-spin" />
+                  : <RefreshCw size={12} strokeWidth={1.5} />}
+                Sync all
+              </button>
+            )}
+          </div>
+        </div>
+
+        {fleetLoading ? (
+          <div className="px-5 py-6 text-[12px] text-[#A3A3A3] flex items-center gap-2">
+            <Loader size={12} strokeWidth={1.5} className="animate-spin" /> Reading channel health…
+          </div>
+        ) : fleetChannels.length === 0 ? (
+          <div className="px-5 py-6">
+            <p className="text-[12px] text-[#525252]">No channels yet.</p>
+            <Link to="/app/channels" className="text-[12px] text-[#0A0A0A] underline mt-1 inline-block">
+              Connect a channel
+            </Link>
+          </div>
+        ) : (
+          <div className="divide-y divide-[#F0F0F0]">
+            {fleetChannels.map((c) => {
+              const age = syncAge(c.last_sync)
+              const coverage = c.videos > 0 ? Math.round((c.measured / c.videos) * 100) : 0
+              return (
+                <Link
+                  key={c.channel_slug}
+                  to={`/app/channels/${c.channel_slug}`}
+                  className="px-5 py-3 flex items-center gap-4 hover:bg-[#FAFAFA] transition-colors"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[13px] font-medium text-[#0A0A0A] truncate">
+                      {c.channel_name || c.channel_slug}
+                    </p>
+                    <p className="text-[11px] text-[#A3A3A3] truncate">
+                      {c.channel_slug}
+                      {c.category_id ? ` · category ${c.category_id}` : ''}
+                    </p>
+                  </div>
+
+                  <div className="w-28 text-right">
+                    <p className="text-[12px] text-[#0A0A0A] tabular-nums">{coverage}%</p>
+                    <p className="text-[10px] text-[#A3A3A3] tabular-nums">
+                      {c.measured}/{c.videos} measured
+                    </p>
+                  </div>
+
+                  <div className="w-24 text-right">
+                    <p className="text-[12px] text-[#0A0A0A] tabular-nums">{c.views.toLocaleString()}</p>
+                    <p className="text-[10px] text-[#A3A3A3]">views</p>
+                  </div>
+
+                  <div className="w-20 text-right">
+                    <p className="text-[12px] text-[#0A0A0A] tabular-nums">{c.pending_topics}</p>
+                    <p className="text-[10px] text-[#A3A3A3]">queued</p>
+                  </div>
+
+                  <div className="w-24 text-right">
+                    <span className={[
+                      'inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border',
+                      age.stale
+                        ? 'bg-[#FFFBEB] text-[#B45309] border-[#FDE68A]'
+                        : 'bg-[#F0FDF4] text-[#16A34A] border-[#BBF7D0]',
+                    ].join(' ')}>
+                      {age.stale ? <AlertCircle size={10} strokeWidth={1.5} /> : <CheckCircle size={10} strokeWidth={1.5} />}
+                      {age.label}
+                    </span>
+                  </div>
+                </Link>
+              )
+            })}
+          </div>
+        )}
+
+        {fleetSync.isError && (
+          <div className="px-5 py-2.5 bg-[#FFF1F2] border-t border-[#FECDD3] text-[11px] text-[#BE123C]">
+            Fleet sync failed — try again.
+          </div>
+        )}
+        {fleetSync.isSuccess && fleetSync.data.failed?.length > 0 && (
+          <div className="px-5 py-2.5 bg-[#FFFBEB] border-t border-[#FDE68A] text-[11px] text-[#B45309]">
+            {fleetSync.data.failed.map((f) => `${f.channel}: ${f.error}`).join(' · ')}
+          </div>
+        )}
       </div>
 
       {/* Recent jobs */}

@@ -1,8 +1,8 @@
-import React, { useState, useRef } from 'react'
+import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Sparkles, Copy, Check, Bookmark, BookmarkCheck,
-  Trash2, Loader2, RefreshCw, Info, Filter,
+  Trash2, Loader2, RefreshCw, Info,
 } from 'lucide-react'
 import { useChannels } from '@hooks/useJobs'
 import { communityApi, type CommunityPost } from '@api/services'
@@ -18,12 +18,6 @@ function timeAgo(iso: string): string {
   const h = Math.floor(m / 60)
   if (h < 24) return `${h}h ago`
   return `${Math.floor(h / 24)}d ago`
-}
-
-function charCount(text: string): string {
-  const n = text.length
-  const color = n > 500 ? '#DC2626' : n > 350 ? '#D97706' : '#16A34A'
-  return `<span style="color:${color}">${n}</span>`
 }
 
 // ─── Copy button ──────────────────────────────────────────────────────────────

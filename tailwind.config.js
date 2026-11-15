@@ -84,8 +84,8 @@ export default {
         },
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
-        serif: ["Lora", "Georgia", "serif"],
+        sans: ["Inter Variable", "system-ui", "sans-serif"],
+        serif: ["Lora Variable", "Georgia", "serif"],
       },
       fontSize: {
         xs: ["12px", { lineHeight: "16px", letterSpacing: "0.5px" }],

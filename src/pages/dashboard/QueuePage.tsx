@@ -11,12 +11,14 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import {
   GripVertical, Play, Trash2, Plus, X, Loader2, ListOrdered,
-  Clapperboard, Film, AlignLeft, ChevronDown,
+  Clapperboard, Film, AlignLeft, CalendarClock,
 } from 'lucide-react'
 import { useQueue, useQueueAdd, useQueueRemove, useQueueReorder } from '@hooks/useJobs'
 import { useChannels } from '@hooks/useJobs'
-import { jobsApi, shortsApi } from '@api/services'
+import { calendarApi, schedulerApi } from '@api/services'
+import { useQueryClient } from '@tanstack/react-query'
 import { useToast } from '@components/Toast'
+import { apiErrorMessage } from '@lib/apiError'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +30,27 @@ interface QueueItem {
   status?: string
   type?: string
   payload?: string | null  // JSON string from DB
+  // When this item becomes runnable (timestamptz). NULL means "as soon as the queue reaches it".
+  scheduled?: string | null
+}
+
+function toLocalInput(value?: string | null): string {
+  // datetime-local wants local wall time; a bare date is read at noon so the day never shifts.
+  if (!value) return ''
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? new Date(`${value}T12:00:00`)
+    : new Date(value)
+  if (Number.isNaN(parsed.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`
+    + `T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`
+}
+
+function formatScheduled(value?: string | null): string {
+  if (!value) return ''
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T12:00:00`) : new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
 function parsePayload(raw: string | null | undefined): Record<string, unknown> {
@@ -36,8 +59,14 @@ function parsePayload(raw: string | null | undefined): Record<string, unknown> {
 }
 
 function isShortItem(item: QueueItem): boolean {
+  // Both labels are live data: `/api/queue/add` writes "Shorts" (plural) but `scripts/seed_channel_queue.py`
+  // wrote "Short", and the seeded rows carry no payload. Matching only "Shorts" made 100 Shorts render as
+  // "Video" — and, worse, "Run" fired the long-form pipeline. Compare case-insensitively and accept both.
   const p = parsePayload(item.payload)
-  return p.content_type === 'shorts' || item.type === 'Shorts'
+  const contentType = String(p.content_type ?? '').toLowerCase()
+  const typeLabel    = String(item.type ?? '').toLowerCase()
+  return contentType === 'shorts' || contentType === 'short'
+      || typeLabel === 'shorts' || typeLabel === 'short'
 }
 
 // ─── Sortable row ─────────────────────────────────────────────────────────────
@@ -45,15 +74,19 @@ function isShortItem(item: QueueItem): boolean {
 function QueueRow({
   item,
   index,
+  channels,
   onRemove,
   onRunNow,
+  onSchedule,
   removing,
   runningId,
 }: {
   item: QueueItem
   index: number
+  channels: Array<{ slug: string; name?: string }>
   onRemove: (id: number) => void
   onRunNow: (item: QueueItem) => void
+  onSchedule: (item: QueueItem) => void
   removing: number | null
   runningId: number | null
 }) {
@@ -71,6 +104,15 @@ function QueueRow({
   const isRemoving = removing === item.id
   const isRunning  = runningId === item.id
   const isShort    = isShortItem(item)
+
+  // Show the channel's display name, not its slug. "truthnevershared" is the live slug behind
+  // WildFactBook (the channel was renamed), so the raw slug read as a channel that no longer exists.
+  // An unrecognised slug is called out instead of being silently printed as if it were a name.
+  const channel = item.channel_slug
+    ? channels.find(c => c.slug === item.channel_slug)
+    : undefined
+  const channelLabel   = channel?.name || item.channel_slug
+  const channelUnknown = !!item.channel_slug && !channel
 
   return (
     <div
@@ -114,15 +156,43 @@ function QueueRow({
         {item.topic}
       </span>
 
-      {/* Channel badge */}
+      {/* Scheduled time, when set */}
+      {item.scheduled && (
+        <span
+          className="flex-shrink-0 flex items-center gap-1 text-[10px] font-medium text-[#7C3AED] bg-[#F5F3FF] border border-[#DDD6FE] px-1.5 py-0.5 rounded-sm"
+          title={`Runs at ${new Date(item.scheduled).toLocaleString()}`}
+        >
+          <CalendarClock size={9} strokeWidth={2} />
+          {formatScheduled(item.scheduled)}
+        </span>
+      )}
+
+      {/* Channel badge — display name, slug on hover */}
       {item.channel_slug && (
-        <span className="flex-shrink-0 text-[10px] font-medium text-[#525252] bg-[#F5F5F5] border border-[#E5E5E5] px-2 py-0.5 rounded-sm">
-          {item.channel_slug}
+        <span
+          title={channelUnknown
+            ? `Unknown channel slug "${item.channel_slug}" — it is not in your channel list`
+            : item.channel_slug}
+          className={[
+            'flex-shrink-0 text-[10px] font-medium border px-2 py-0.5 rounded-sm',
+            channelUnknown
+              ? 'text-[#B45309] bg-[#FFFBEB] border-[#FDE68A]'
+              : 'text-[#525252] bg-[#F5F5F5] border-[#E5E5E5]',
+          ].join(' ')}
+        >
+          {channelUnknown ? `${channelLabel} (unknown)` : channelLabel}
         </span>
       )}
 
       {/* Actions - visible on hover */}
       <div className="flex-shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          onClick={() => onSchedule(item)}
+          title="Add to calendar (choose date and time)"
+          className="w-7 h-7 flex items-center justify-center rounded text-[#525252] bg-[#F5F5F5] hover:bg-[#E5E5E5] border border-[#E5E5E5] transition-colors"
+        >
+          <CalendarClock size={11} strokeWidth={1.5} />
+        </button>
         <button
           onClick={() => onRunNow(item)}
           disabled={!!isRunning}
@@ -157,7 +227,7 @@ function AddTopicForm({
   defaultChannelSlug,
 }: {
   onAdd: (topic: string, channelSlug?: string, contentType?: string) => void
-  channels: Array<{ channel_slug: string; display_name?: string; name?: string }>
+  channels: Array<{ slug: string; name?: string }>
   onCancel: () => void
   defaultChannelSlug?: string
 }) {
@@ -247,7 +317,7 @@ function BulkAddModal({
   defaultChannelSlug,
 }: {
   onAdd: (topics: string[], channelSlug?: string, contentType?: string) => Promise<void>
-  channels: Array<{ channel_slug: string; display_name?: string; name?: string }>
+  channels: Array<{ slug: string; name?: string }>
   onClose: () => void
   defaultChannelSlug?: string
 }) {
@@ -384,7 +454,7 @@ export default function QueuePage() {
   const toast = useToast()
 
   const { data: rawChannels = [] } = useChannels()
-  const channels = rawChannels as Array<{ channel_slug: string; display_name?: string; name?: string }>
+  const channels = rawChannels as Array<{ slug: string; name?: string }>
 
   // Per-channel filter - '' means all channels
   const [filterSlug, setFilterSlug] = useState<string>('')
@@ -393,6 +463,7 @@ export default function QueuePage() {
   const addMutation    = useQueueAdd()
   const removeMutation = useQueueRemove()
   const reorderMutation = useQueueReorder()
+  const queryClient = useQueryClient()
 
   // Local copy for optimistic reorder
   const [items, setItems] = useState<QueueItem[]>([])
@@ -400,6 +471,9 @@ export default function QueuePage() {
   const [showBulkModal, setShowBulkModal] = useState(false)
   const [removingId, setRemovingId]     = useState<number | null>(null)
   const [runningId, setRunningId]       = useState<number | null>(null)
+  // "Add to calendar" draft: which row is open, and the datetime-local value in the user's zone.
+  const [scheduling, setScheduling]     = useState<{ id: number; value: string } | null>(null)
+  const [savingSchedule, setSavingSchedule] = useState(false)
 
   // Sync server data into local state
   useEffect(() => {
@@ -470,32 +544,31 @@ export default function QueuePage() {
   }
 
   const handleRunNow = async (item: QueueItem) => {
-    const meta    = parsePayload(item.payload)
     const isShort = isShortItem(item)
     setRunningId(item.id)
     try {
-      if (isShort) {
-        await shortsApi.pipelineRun({
-          topic: item.topic,
-          aspect_ratio: (meta.aspect_ratio as string) || '9:16',
-          channel_slug: item.channel_slug,
-        })
-        toast.success('Shorts pipeline started')
-        navigate('/app/shorts')
+      // Dequeue-and-run through the scheduler, NOT the pipeline endpoints directly.
+      // The scheduler claims THIS row, routes a Short to the vertical-Short worker (not the
+      // animated Kling pipeline) and a video to the long-form pipeline, then marks the row
+      // done/failed. Calling `/api/shorts/pipeline/run` / `/api/pipeline/run` here rendered
+      // the video but never touched the queue, so the row stayed pending forever — which is
+      // what made "Run" look broken for Shorts.
+      const started = await schedulerApi.runNext(item.channel_slug || undefined, item.id)
+      toast.success(started?.topic ? `Running: ${started.topic}` : 'Run started')
+      // Drop the claimed row from the list immediately instead of waiting for a refetch.
+      setItems((prev) => prev.filter((i) => i.id !== item.id))
+      queryClient.invalidateQueries({ queryKey: ['queue'], exact: false })
+      if (started?.job_id) {
+        navigate(isShort
+          ? `/app/shorts?job=${encodeURIComponent(started.job_id)}`
+          : `/app/jobs/${started.job_id}`)
       } else {
-        const result = await jobsApi.run({ topic: item.topic, channel_slug: item.channel_slug })
-        toast.success('Pipeline started')
-        if ((result as any)?.job_id) navigate(`/app/jobs/${(result as any).job_id}`)
-        else navigate('/app/jobs')
+        navigate(isShort ? '/app/shorts' : '/app/jobs')
       }
     } catch (err: any) {
-      const status = err?.response?.status
-      const detail = err?.response?.data?.detail
-      if (status === 402 && detail?.code === 'plan_limit_reached') {
-        toast.error(`Plan limit reached (${detail.used}/${detail.limit})`)
-      } else {
-        toast.error(err?.response?.data?.detail ?? 'Failed to start pipeline')
-      }
+      // Report every failure, not just 402 — a 404 ("no longer pending") or 503 is real.
+      toast.error(apiErrorMessage(err, 'Failed to start run'))
+      queryClient.invalidateQueries({ queryKey: ['queue'], exact: false })
     } finally {
       setRunningId(null)
     }
@@ -504,6 +577,34 @@ export default function QueuePage() {
   const handleRunNext = () => {
     if (items.length === 0) return
     handleRunNow(items[0])
+  }
+
+  // ── Add to calendar ─────────────────────────────────────────────────────
+  const openScheduler = (item: QueueItem) => {
+    setScheduling({
+      id: item.id,
+      // Default to today at the same wall-clock time as now, rounded up to the next half hour.
+      value: toLocalInput(item.scheduled) || (() => {
+        const d = new Date()
+        d.setMinutes(d.getMinutes() + (30 - (d.getMinutes() % 30)), 0, 0)
+        return toLocalInput(d.toISOString())
+      })(),
+    })
+  }
+
+  const saveScheduled = async (iso: string | null) => {
+    if (!scheduling) return
+    setSavingSchedule(true)
+    try {
+      await calendarApi.updateScheduled(scheduling.id, iso)
+      toast.success(iso ? 'Added to your calendar' : 'Removed from the calendar')
+      setScheduling(null)
+      await refetch()
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not update the schedule'))
+    } finally {
+      setSavingSchedule(false)
+    }
   }
 
   // ── Error state ──────────────────────────────────────────────────────────────
@@ -606,7 +707,13 @@ export default function QueuePage() {
   if (isLoading) {
     return (
       <div className="p-6">
-        <div className="h-7 w-24 bg-[#F5F5F5] rounded animate-pulse mb-6" />
+        {/* The title is real, not a skeleton: it must be present from the first paint,
+            so the page is never a nameless grey block (and an "is the page up?" check
+            cannot race the data fetch). */}
+        <div className="mb-6">
+          <h1 className="text-[18px] font-semibold text-[#0A0A0A]">Queue</h1>
+          <div className="h-4 w-52 bg-[#F5F5F5] rounded animate-pulse mt-1.5" />
+        </div>
         <div className="border border-[#E5E5E5] rounded-lg overflow-hidden">
           {[...Array(4)].map((_, i) => (
             <div key={i} className="h-11 border-b border-[#E5E5E5] bg-white px-4 flex items-center gap-3 last:border-b-0">
@@ -695,15 +802,61 @@ export default function QueuePage() {
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
             {items.map((item, index) => (
-              <QueueRow
-                key={item.id}
-                item={item}
-                index={index}
-                onRemove={handleRemove}
-                onRunNow={handleRunNow}
-                removing={removingId}
-                runningId={runningId}
-              />
+              <React.Fragment key={item.id}>
+                <QueueRow
+                  item={item}
+                  index={index}
+                  channels={channels}
+                  onRemove={handleRemove}
+                  onRunNow={handleRunNow}
+                  onSchedule={openScheduler}
+                  removing={removingId}
+                  runningId={runningId}
+                />
+
+                {/* Add-to-calendar editor, inline under the row */}
+                {scheduling?.id === item.id && (
+                  <div className="flex items-end gap-2 px-4 py-2.5 bg-[#FAFAFA] border-b border-[#E5E5E5]">
+                    <div>
+                      <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1">
+                        Runs at (your time)
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={scheduling.value}
+                        onChange={(e) => setScheduling({ ...scheduling, value: e.target.value })}
+                        className="h-8 px-2 text-[12px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A]"
+                      />
+                    </div>
+                    <button
+                      onClick={() => saveScheduled(
+                        scheduling.value ? new Date(scheduling.value).toISOString() : null)}
+                      disabled={savingSchedule || !scheduling.value}
+                      className="h-8 px-3 text-[11px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] disabled:opacity-40 flex items-center gap-1.5"
+                    >
+                      {savingSchedule && <Loader2 size={11} strokeWidth={1.5} className="animate-spin" />}
+                      Save
+                    </button>
+                    <button
+                      onClick={() => saveScheduled(null)}
+                      disabled={savingSchedule || !item.scheduled}
+                      title="Take this topic off the calendar"
+                      className="h-8 px-3 text-[11px] font-medium text-[#525252] border border-[#E5E5E5] bg-white rounded hover:border-[#D4D4D4] disabled:opacity-40"
+                    >
+                      Clear
+                    </button>
+                    <button
+                      onClick={() => setScheduling(null)}
+                      className="h-8 px-2 text-[11px] text-[#A3A3A3] hover:text-[#0A0A0A]"
+                    >
+                      Cancel
+                    </button>
+                    <p className="text-[10px] text-[#A3A3A3] pb-1.5">
+                      It stays queued and runs at this time once your scheduler slot is reached.
+                    </p>
+                  </div>
+                )}
+              </React.Fragment>
             ))}
           </SortableContext>
         </DndContext>

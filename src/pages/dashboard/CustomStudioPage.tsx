@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  FileText, Film, Sparkles, Loader2, Upload, Trash2,
+  Film, Sparkles, Loader2, Upload, Trash2,
   Mic, Bot, ExternalLink, CheckCircle, AlertCircle, ArrowLeft,
 } from 'lucide-react'
 import { customStudioApi, studioApi, channelsApi } from '@api/services'
@@ -55,7 +55,7 @@ function StepNav({ current }: { current: Step }) {
 
 // ── Status Panel ──────────────────────────────────────────────────────────────
 
-function StatusPanel({ channelSlug }: { channelSlug: string }) {
+function StatusPanel() {
   const { data } = useQuery<PipelineStatus>({
     queryKey: ['cs-status'],
     queryFn: customStudioApi.status,
@@ -175,7 +175,7 @@ export default function CustomStudioPage() {
 
   const { data: channelsData } = useQuery({
     queryKey: ['channels'],
-    queryFn: channelsApi.list,
+    queryFn: () => channelsApi.list(),
   })
 
   const clips: UploadedClip[] = clipsData?.clips ?? []
@@ -645,7 +645,7 @@ export default function CustomStudioPage() {
         )}
 
         {/* Status panel - always visible below when active */}
-        <StatusPanel channelSlug={channelSlug} />
+        <StatusPanel />
 
       </div>
     </div>

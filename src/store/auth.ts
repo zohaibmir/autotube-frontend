@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { tokenStore, StoredUser } from '@lib/tokenStore'
-import { User } from '@types/api'
+import { User } from '@/types/api'
 import apiClient from '@api/client'
 
 interface AuthStore {
@@ -8,6 +8,8 @@ interface AuthStore {
   isLoading: boolean
   login: (email: string, password: string) => Promise<void>
   signup: (email: string, password: string, name?: string) => Promise<{ confirmEmail: boolean }>
+  forgotPassword: (email: string) => Promise<void>
+  resetPassword: (accessToken: string, newPassword: string) => Promise<void>
   logout: () => Promise<void>
   /** Rehydrate store from localStorage + optionally verify with /api/auth/me */
   syncSession: () => Promise<void>
@@ -74,6 +76,24 @@ export const useAuthStore = create<AuthStore>((set) => ({
     } finally {
       set({ isLoading: false })
     }
+  },
+
+  // Password recovery.
+  //
+  // `forgot-password` always resolves, even for an address with no account --
+  // the backend does the same, so that neither the API nor the UI can be used
+  // to discover which emails are registered.
+  forgotPassword: async (email) => {
+    await apiClient.post('/api/auth/forgot-password', { email })
+  },
+
+  // Completes a reset using the recovery token Supabase put in the emailed
+  // link. No user id is involved: the token is the proof of identity.
+  resetPassword: async (accessToken, newPassword) => {
+    await apiClient.post('/api/auth/reset-password', {
+      access_token: accessToken,
+      new_password: newPassword,
+    })
   },
 
   logout: async () => {

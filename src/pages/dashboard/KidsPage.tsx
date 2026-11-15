@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Sparkles, ChevronRight, Loader2, Check, X, Plus, Trash2,
-  ExternalLink, RefreshCw, AlertCircle, Music2, Mic, User, Image,
+  ExternalLink, AlertCircle, Music2, Mic, User, Image,
   ChevronDown, ChevronUp, Wand2,
 } from 'lucide-react'
-import { kidsApi, characterApi, channelsApi } from '@api/services'
+import { kidsApi, characterApi, channelsApi, billingApi } from '@api/services'
+import { apiErrorMessage } from '@lib/apiError'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -31,12 +33,41 @@ interface GenData {
     animation_style?: string
     main_character?: string
     world_description?: string
-    segments?: { segment_number: number; narration: string; visual_keyword: string }[]
+    segments?: SceneSegment[]
   }
   result?: Record<string, any>
   youtube_url?: string
   error?: string
   character_profile_name?: string
+  channel?: string
+}
+
+/** Server-computed price for an animated episode (POST /animated/quote). */
+interface EpisodeQuote {
+  segments: number
+  clips: number
+  generated_seconds: number
+  cost_usd: number
+  credits: number
+  byok_credits: number
+  coverage_ratio: number
+  credits_remaining: number | null
+  affordable: boolean
+}
+
+// Mirrors core/pricing.ANIMATION_DEFAULT_COVERAGE. The server remains the source
+// of truth for the PRICE, which is what actually matters; this only decides which
+// preset is highlighted before the first quote comes back.
+const DEFAULT_COVERAGE = 0.3
+
+interface SceneSegment {
+  segment_number: number
+  narration: string
+  visual_keyword: string
+  duration_seconds?: number
+  rerolled?: boolean
+  /** Which character speaks this scene; keys into the channel's voice_assignments. */
+  speaker?: string
 }
 
 interface CharProfile {
@@ -274,39 +305,152 @@ function LoadingCard({ message, onCancel }: { message: string; onCancel?: () => 
   )
 }
 
-// ── Error Card ────────────────────────────────────────────────────────────────
-
-function ErrorCard({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-8 gap-3">
-      <AlertCircle size={22} strokeWidth={1.5} className="text-red-400" />
-      <p className="text-[13px] text-[#0A0A0A] text-center max-w-sm">{message}</p>
-      <button
-        onClick={onRetry}
-        className="flex items-center gap-1.5 h-8 px-4 border border-[#E5E5E5] text-[12px] text-[#525252] rounded hover:border-[#D4D4D4] transition-colors"
-      >
-        <RefreshCw size={12} strokeWidth={1.5} /> Try again
-      </button>
-    </div>
-  )
-}
-
 // ── Review Card ───────────────────────────────────────────────────────────────
+
+// Animation coverage presets — the cost/quality dial (core/animation_coverage.py).
+// Every video model bills per SECOND generated, so generating a unique clip for
+// every scene of a 3-minute episode is ~$12.60. Lower coverage renders faster.
+const COVERAGE_PRESETS = [
+  { label: 'Every scene', ratio: 1.0 },
+  { label: 'Most scenes', ratio: 0.5 },
+  { label: 'Key scenes', ratio: 0.3 },
+  { label: 'Minimal', ratio: 0.15 },
+]
 
 function ReviewCard({
   genData,
+  genId,
   onApprove,
   onBack,
   approving,
+  creditsRemaining,
+  creditsCost,
+  coverage,
+  onCoverageChange,
+  quote,
 }: {
   genData: GenData
-  onApprove: () => void
+  genId: string
+  onApprove: (coverageRatio?: number) => void
   onBack: () => void
   approving: boolean
+  creditsRemaining?: number | null
+  creditsCost?: number | null
+  coverage: number
+  onCoverageChange: (ratio: number) => void
+  quote: EpisodeQuote | null
 }) {
-  const [showSegments, setShowSegments] = useState(false)
-  const segments = genData.kling_prompt?.segments ?? []
+  const [showSegments, setShowSegments] = useState(true)
   const kp = genData.kling_prompt
+
+  // Local copy so edits and reorders render immediately. The backend persists
+  // the same values and the render worker reads them from there, so this state
+  // is for display only -- it does not need to be re-polled.
+  const [segments, setSegments] = useState<SceneSegment[]>(
+    () => genData.kling_prompt?.segments ?? [],
+  )
+  const [busyScene, setBusyScene] = useState<number | null>(null)
+  const [savedScene, setSavedScene] = useState<number | null>(null)
+  const [sceneError, setSceneError] = useState<string | null>(null)
+
+  // Coverage lives in the parent so the dial and the pre-render confirm share a
+  // single source. The clip count and the price come back from the server's
+  // quote, because the charge is derived from the measured Kling cost.
+  const coverageClips = quote?.clips
+    ?? Math.max(1, Math.ceil(segments.length * coverage))
+
+  // Character names available for per-character voice. Purely a convenience for
+  // the datalist -- the speaker stays free text, and a name with no voice
+  // assignment simply falls back to the episode voice.
+  const [speakers, setSpeakers] = useState<string[]>([])
+  useEffect(() => {
+    const ch = genData.channel
+    if (!ch) return
+    let cancelled = false
+    characterApi.list(ch)
+      .then((profiles: any[]) => {
+        if (cancelled) return
+        setSpeakers(
+          Array.from(new Set(
+            (profiles ?? []).map(p => p?.profile_name).filter(Boolean),
+          )),
+        )
+      })
+      .catch(() => { /* no profiles is fine -- speaker stays free text */ })
+    return () => { cancelled = true }
+  }, [genData.channel])
+
+  // Animated episodes are gated by require_credits("anime_episode"), so these
+  // catches receive a *structured* 402 whose `detail` is an object. Passing it
+  // into setError() rendered it and React threw "Objects are not valid as a React
+  // child" -- so the low-balance user, the exact person this message is for, got a
+  // crash instead of "you need N credits, you have M".
+  const sceneErrorText = (e: any) => apiErrorMessage(e, 'Something went wrong')
+
+  const replaceScene = (scene: SceneSegment) =>
+    setSegments(prev =>
+      prev.map(s => (s.segment_number === scene.segment_number ? scene : s)))
+
+  const flashSaved = (n: number) => {
+    setSavedScene(n)
+    setTimeout(() => setSavedScene(null), 1500)
+  }
+
+  /** Persist an edit. Free -- no Kling or Claude spend. */
+  const saveScene = async (seg: SceneSegment, patch: Partial<SceneSegment>) => {
+    setBusyScene(seg.segment_number); setSceneError(null)
+    try {
+      const res = await kidsApi.editScene({
+        genId,
+        sceneIndex: seg.segment_number,
+        narration: patch.narration,
+        visualKeyword: patch.visual_keyword,
+        speaker: patch.speaker,
+      })
+      replaceScene(res.scene)
+      flashSaved(seg.segment_number)
+    } catch (e) {
+      setSceneError(sceneErrorText(e))
+    } finally {
+      setBusyScene(null)
+    }
+  }
+
+  /** Rewrite this one scene with Claude. 1 utility credit, no Kling spend. */
+  const rerollScene = async (seg: SceneSegment) => {
+    setBusyScene(seg.segment_number); setSceneError(null)
+    try {
+      const res = await kidsApi.rerollScene({ genId, sceneIndex: seg.segment_number })
+      replaceScene(res.scene)
+      flashSaved(seg.segment_number)
+    } catch (e) {
+      setSceneError(sceneErrorText(e))
+    } finally {
+      setBusyScene(null)
+    }
+  }
+
+  /** Swap this scene with its neighbour. Free. */
+  const moveScene = async (index: number, delta: number) => {
+    const target = index + delta
+    if (target < 0 || target >= segments.length) return
+    const order = segments.map(s => s.segment_number)
+    ;[order[index], order[target]] = [order[target], order[index]]
+    setBusyScene(segments[index].segment_number); setSceneError(null)
+    try {
+      const res = await kidsApi.reorderScenes({ genId, order })
+      setSegments(res.segments)
+    } catch (e) {
+      setSceneError(sceneErrorText(e))
+    } finally {
+      setBusyScene(null)
+    }
+  }
+
+  // W8: block approval up front when the balance can't cover the episode; the
+  // backend would 402 anyway -- this avoids a pointless click.
+  const cannotAfford =
+    creditsRemaining != null && creditsCost != null && creditsRemaining < creditsCost
 
   return (
     <div className="space-y-4">
@@ -371,17 +515,99 @@ function ReviewCard({
                   className="flex items-center gap-1 text-[#525252] hover:text-[#0A0A0A] transition-colors mt-1"
                 >
                   {showSegments ? <ChevronUp size={12} strokeWidth={1.5} /> : <ChevronDown size={12} strokeWidth={1.5} />}
-                  {showSegments ? 'Hide' : 'Preview'} all {segments.length} segments
+                  {showSegments ? 'Hide' : 'Edit'} the {segments.length} scenes
                 </button>
+                <p className="text-[10px] text-[#A3A3A3] mt-0.5">
+                  Editing and reordering are free. The render uses exactly what you leave here.
+                </p>
+
+                {sceneError && (
+                  <p className="text-[10px] text-red-600 mt-1">{sceneError}</p>
+                )}
+
                 {showSegments && (
-                  <div className="mt-2 max-h-48 overflow-y-auto space-y-1 pr-1">
-                    {segments.map(seg => (
-                      <div key={seg.segment_number} className="flex gap-2 text-[11px] py-1 border-b border-[#F5F5F5]">
-                        <span className="text-[#A3A3A3] w-6 flex-shrink-0 font-mono">{seg.segment_number}.</span>
-                        <div>
-                          <p className="text-[#525252] italic">{seg.narration}</p>
-                          <p className="text-[#0A0A0A] mt-0.5">{seg.visual_keyword?.slice(0, 120)}{(seg.visual_keyword?.length ?? 0) > 120 ? '…' : ''}</p>
+                  <div className="mt-2 max-h-96 overflow-y-auto space-y-2 pr-1">
+                    {segments.map((seg, i) => (
+                      <div key={seg.segment_number}
+                           className="border border-[#E5E5E5] rounded p-2 space-y-1.5 bg-white">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-mono text-[#A3A3A3] w-5 flex-shrink-0">
+                            {seg.segment_number}.
+                          </span>
+                          {seg.rerolled && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">
+                              re-rolled
+                            </span>
+                          )}
+                          {busyScene === seg.segment_number && (
+                            <Loader2 size={10} className="animate-spin text-[#A3A3A3]" />
+                          )}
+                          {savedScene === seg.segment_number && (
+                            <span className="text-[9px] text-green-600">Saved</span>
+                          )}
+                          <div className="ml-auto flex items-center gap-1">
+                            <button
+                              onClick={() => moveScene(i, -1)}
+                              disabled={i === 0 || busyScene !== null}
+                              title="Move earlier"
+                              className="h-5 w-5 flex items-center justify-center border border-[#E5E5E5] rounded text-[#525252] disabled:opacity-30 hover:border-[#D4D4D4]"
+                            >
+                              <ChevronUp size={10} strokeWidth={2} />
+                            </button>
+                            <button
+                              onClick={() => moveScene(i, 1)}
+                              disabled={i === segments.length - 1 || busyScene !== null}
+                              title="Move later"
+                              className="h-5 w-5 flex items-center justify-center border border-[#E5E5E5] rounded text-[#525252] disabled:opacity-30 hover:border-[#D4D4D4]"
+                            >
+                              <ChevronDown size={10} strokeWidth={2} />
+                            </button>
+                            <button
+                              onClick={() => rerollScene(seg)}
+                              disabled={busyScene !== null}
+                              title="Rewrite this scene with Claude (1 credit)"
+                              className="h-5 px-1.5 flex items-center gap-1 border border-[#E5E5E5] rounded text-[9px] text-[#525252] disabled:opacity-30 hover:border-[#D4D4D4]"
+                            >
+                              <Wand2 size={9} strokeWidth={1.5} /> Re-roll
+                            </button>
+                          </div>
                         </div>
+                        <div className="flex items-center gap-1.5">
+                          <Mic size={10} strokeWidth={1.5} className="text-[#A3A3A3] flex-shrink-0" />
+                          <input
+                            list="kids-scene-speakers"
+                            value={seg.speaker ?? ''}
+                            onChange={e => setSegments(prev => prev.map(s =>
+                              s.segment_number === seg.segment_number
+                                ? { ...s, speaker: e.target.value } : s))}
+                            onBlur={e => saveScene(seg, { speaker: e.target.value })}
+                            placeholder="Speaker (optional) — assign a per-character voice"
+                            className="flex-1 px-2 py-1 text-[10px] text-[#525252] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A]"
+                          />
+                          <datalist id="kids-scene-speakers">
+                            {speakers.map(s => <option key={s} value={s} />)}
+                          </datalist>
+                        </div>
+                        <textarea
+                          value={seg.narration}
+                          onChange={e => setSegments(prev => prev.map(s =>
+                            s.segment_number === seg.segment_number
+                              ? { ...s, narration: e.target.value } : s))}
+                          onBlur={e => saveScene(seg, { narration: e.target.value })}
+                          rows={2}
+                          placeholder="Narration"
+                          className="w-full px-2 py-1 text-[11px] italic text-[#525252] bg-white border border-[#E5E5E5] rounded resize-none focus:outline-none focus:border-[#0A0A0A]"
+                        />
+                        <textarea
+                          value={seg.visual_keyword}
+                          onChange={e => setSegments(prev => prev.map(s =>
+                            s.segment_number === seg.segment_number
+                              ? { ...s, visual_keyword: e.target.value } : s))}
+                          onBlur={e => saveScene(seg, { visual_keyword: e.target.value })}
+                          rows={2}
+                          placeholder="What is on screen"
+                          className="w-full px-2 py-1 text-[11px] text-[#0A0A0A] bg-white border border-[#E5E5E5] rounded resize-none focus:outline-none focus:border-[#0A0A0A]"
+                        />
                       </div>
                     ))}
                   </div>
@@ -392,14 +618,65 @@ function ReviewCard({
         </div>
       )}
 
-      {/* Cost warning */}
-      <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-50 border border-amber-100 rounded-md">
-        <AlertCircle size={12} strokeWidth={1.5} className="text-amber-600 mt-0.5 flex-shrink-0" />
-        <p className="text-[11px] text-amber-700">
-          Approving will generate audio (Suno/Mureka) and animation (Kling AI) - this consumes API credits.
-          Review carefully before proceeding.
+      {/* Cost warning (W8: real credit numbers from /api/billing/usage) */}
+      <div className={`flex items-start gap-2 px-3 py-2.5 border rounded-md ${
+        cannotAfford
+          ? 'bg-red-50 border-red-100'
+          : 'bg-amber-50 border-amber-100'
+      }`}>
+        <AlertCircle size={12} strokeWidth={1.5} className={`mt-0.5 flex-shrink-0 ${cannotAfford ? 'text-red-600' : 'text-amber-600'}`} />
+        <p className={`text-[11px] ${cannotAfford ? 'text-red-700' : 'text-amber-700'}`}>
+          {cannotAfford ? (
+            <>This animation needs <strong>{creditsCost} credits</strong> and you have <strong>{creditsRemaining}</strong>. <Link to="/app/billing" className="underline font-medium hover:opacity-80">Upgrade or top up</Link> to render it.</>
+          ) : creditsRemaining != null && creditsCost != null ? (
+            <>Approving will generate audio (Suno/Mureka) and animation (Kling AI) and use <strong>{creditsCost} credits</strong> of your <strong>{creditsRemaining}</strong>. Review carefully before proceeding.</>
+          ) : (
+            <>Approving will generate audio (Suno/Mureka) and animation (Kling AI) - this consumes API credits. Review carefully before proceeding.</>
+          )}
         </p>
       </div>
+
+      {/* Animation coverage — the cost dial. The price shown comes from the
+          server (POST /animated/quote), because the charge is derived from the
+          measured Kling cost; a hard-coded number drifts from it. */}
+      {segments.length > 1 && (
+        <div className="border border-[#E5E5E5] rounded-md p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] font-medium text-[#525252] uppercase tracking-wide">
+              Animation coverage
+            </p>
+            <span className="text-[10px] text-[#525252]">
+              {coverageClips} of {segments.length} scenes
+              {quote ? <> · <span className="text-[#0A0A0A] font-medium">{quote.credits} credits</span></> : null}
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {COVERAGE_PRESETS.map(p => (
+              <button
+                key={p.label}
+                onClick={() => onCoverageChange(p.ratio)}
+                disabled={busyScene !== null || approving}
+                className={`h-8 text-[10px] rounded border transition-colors disabled:opacity-40 ${
+                  coverage === p.ratio
+                    ? 'border-[#0A0A0A] bg-[#0A0A0A] text-white'
+                    : 'border-[#E5E5E5] text-[#525252] hover:border-[#D4D4D4]'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-[#A3A3A3]">
+            You pay for the scenes you animate. A scene without its own clip holds the
+            previous one, so the video still spans the full runtime.
+            {quote && quote.byok_credits < quote.credits && (
+              <> With your own Kling key this episode costs{' '}
+                <strong className="text-[#525252]">{quote.byok_credits} credits</strong>{' '}
+                instead of {quote.credits}.</>
+            )}
+          </p>
+        </div>
+      )}
 
       <div className="flex items-center justify-between pt-1">
         <button
@@ -409,8 +686,8 @@ function ReviewCard({
           <ChevronRight size={12} strokeWidth={1.5} className="rotate-180" /> Regenerate
         </button>
         <button
-          onClick={onApprove}
-          disabled={approving}
+          onClick={() => onApprove(coverage)}
+          disabled={approving || cannotAfford}
           className="flex items-center gap-2 h-9 px-5 bg-[#0A0A0A] text-white text-[13px] font-medium rounded-md hover:bg-[#262626] disabled:opacity-40 transition-colors"
         >
           {approving
@@ -611,14 +888,12 @@ function SuccessCard({ genData, onNew }: { genData: GenData; onNew: () => void }
 
 function CharCard({
   profile,
-  channelSlug,
   onEdit,
   onToggleActive,
   onDelete,
   isActive,
 }: {
   profile: CharProfile
-  channelSlug: string
   onEdit: () => void
   onToggleActive: () => void
   onDelete: () => void
@@ -683,7 +958,6 @@ function CharCard({
 
 function CharEditPanel({
   profile,
-  channelSlug,
   onSave,
   onClose,
   onGenerateImage,
@@ -691,7 +965,6 @@ function CharEditPanel({
   generatingImage,
 }: {
   profile: CharProfile | null
-  channelSlug: string
   onSave: (data: Partial<CharProfile>) => void
   onClose: () => void
   onGenerateImage: (characterLock: string, styleLock: string) => void
@@ -924,8 +1197,35 @@ export default function KidsPage() {
   const [aiGenerating, setAIGenerating] = useState(false)
 
   // ── Shared data ────────────────────────────────────────────────────────────
-  const { data: channelsData } = useQuery({ queryKey: ['channels'], queryFn: channelsApi.list })
+  const { data: channelsData } = useQuery({ queryKey: ['channels'], queryFn: () => channelsApi.list() })
   const channels: any[] = channelsData ?? []
+
+  // W8: credit balance + recipe costs for the pre-render confirm in the review
+  // step (an animated episode is the most expensive thing a user can click).
+  const { data: usageData } = useQuery({
+    queryKey: ['billing-usage'],
+    queryFn: () => billingApi.usage(),
+    staleTime: 30_000,
+    retry: false,
+  })
+  const creditsRemaining = usageData?.credits_remaining ?? null
+
+  // Episode price + animation coverage. BOTH come from the server: the charge is
+  // derived from the measured Kling cost, so a hard-coded number here drifts
+  // from what the customer actually pays -- the old flat `anime_episode` recipe
+  // was 6-13x below the real charge.
+  const [coverage, setCoverage] = useState(DEFAULT_COVERAGE)
+  const [quote, setQuote] = useState<EpisodeQuote | null>(null)
+  const episodeCost = quote?.credits ?? null
+
+  useEffect(() => {
+    if (phase !== 'review' || !genId) return
+    let cancelled = false
+    kidsApi.quote(genId, coverage)
+      .then((q: EpisodeQuote) => { if (!cancelled) setQuote(q) })
+      .catch(() => { if (!cancelled) setQuote(null) })
+    return () => { cancelled = true }
+  }, [phase, genId, coverage])
 
   const { data: charData, refetch: refetchChars } = useQuery({
     queryKey: ['character-profiles', charChannel],
@@ -983,23 +1283,25 @@ export default function KidsPage() {
       if (!res.ok || !res.gen_id) throw new Error(res.error ?? 'No gen_id returned')
       setGenId(res.gen_id)
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? e.message ?? 'Failed to start generation')
+      setError(apiErrorMessage(e, 'Failed to start generation'))
       setPhase('setup')
     }
   }, [])
 
-  const handleApprove = useCallback(async () => {
+  const handleApprove = useCallback(async (coverageRatio?: number) => {
     if (!genId) return
     setApproving(true)
     try {
-      await kidsApi.approve(genId)
+      await kidsApi.approve(genId, coverageRatio)
       setPhase('media_loading')
+      // W8: the episode charge happens in the worker; refresh the sidebar chip.
+      qc.invalidateQueries({ queryKey: ['billing-usage'] })
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? e.message ?? 'Approve failed')
+      setError(apiErrorMessage(e, 'Approve failed'))
     } finally {
       setApproving(false)
     }
-  }, [genId])
+  }, [genId, qc])
 
   const handlePublish = useCallback(async (form: PublishValues) => {
     if (!genId) return
@@ -1008,7 +1310,7 @@ export default function KidsPage() {
       await kidsApi.publish({ genId, ...form })
       setPhase('publishing')
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? e.message ?? 'Publish failed')
+      setError(apiErrorMessage(e, 'Publish failed'))
     } finally {
       setPublishing(false)
     }
@@ -1178,7 +1480,18 @@ export default function KidsPage() {
               )}
 
               {phase === 'review' && genData && (
-                <ReviewCard genData={genData} onApprove={handleApprove} onBack={handleReset} approving={approving} />
+                <ReviewCard
+                  genData={genData}
+                  genId={genId ?? ''}
+                  onApprove={handleApprove}
+                  onBack={handleReset}
+                  approving={approving}
+                  creditsRemaining={creditsRemaining}
+                  creditsCost={episodeCost}
+                  coverage={coverage}
+                  onCoverageChange={setCoverage}
+                  quote={quote}
+                />
               )}
 
               {phase === 'media_loading' && genData && (
@@ -1260,7 +1573,6 @@ export default function KidsPage() {
                   <CharCard
                     key={p.id}
                     profile={p}
-                    channelSlug={charChannel}
                     isActive={p.is_active ?? false}
                     onEdit={() => { setEditChar(p); setShowEditPanel(true) }}
                     onToggleActive={() => handleToggleActive(p)}
@@ -1275,7 +1587,6 @@ export default function KidsPage() {
           {showEditPanel && (
             <CharEditPanel
               profile={editChar as CharProfile}
-              channelSlug={charChannel}
               onSave={handleSaveChar}
               onClose={() => setShowEditPanel(false)}
               onGenerateImage={handleGenerateImage}

@@ -1,6 +1,75 @@
 import apiClient from './client'
 import { tokenStore } from '@lib/tokenStore'
-import { Job, Channel, PaginatedResponse, ApiResponse } from '@types/api'
+import { Job, Channel, ProviderReadiness } from '@/types/api'
+
+// ── Analytics AI contracts (R1) ───────────────────────────────────────────────
+//
+// These mirror what `analytics_ai.py` returns. They are **declared** rather than inferred, which is the
+// whole point: the previous mismatch between these two files was invisible to the compiler and rendered
+// every insight card as raw JSON while leaving the weekly digest permanently empty. With types, changing
+// one side without the other is a build error.
+
+/** Three states the UI must not merge. `insufficient_data` is not a failure, and neither is a
+ *  legitimately-empty result — but `error` is, and all three used to read as "sync from YouTube first". */
+export type AiStatus = 'ok' | 'insufficient_data' | 'error'
+
+/** One insight card. `analytics_ai.generate_insights_summary` builds exactly these keys. */
+export interface InsightCard {
+  /** Pattern name — this is the card heading. */
+  title: string
+  metric?: string
+  effect?: string
+  /** 0–1. */
+  confidence?: number
+  icon?: string
+}
+
+/** A recommended next step. Returned as a **top-level list**, not attached to a card. */
+export interface InsightAction {
+  action: string
+  /** 0-based, lower is more important. */
+  priority?: number
+  status?: string
+}
+
+export interface InsightsResponse {
+  /** Absent only from a backend older than this change; treat as 'ok'. */
+  status?: AiStatus
+  insights: InsightCard[]
+  actions?: InsightAction[]
+  summary?: string
+  confidence?: number
+  generated_at?: string
+  /** Present when `status === 'error'`. */
+  error?: string
+  /** Present when `status === 'insufficient_data'`; `summary` carries the same text. */
+  message?: string
+}
+
+/** A raw pattern as the model returns it, before `generate_insights_summary` maps it into a card.
+ *  The digest returns these **unmapped** (no `title`, no `icon`), which is why the panel must read
+ *  `name` rather than the card's `title`. */
+export interface InsightPattern {
+  name?: string
+  metric?: string
+  effect?: string
+  confidence?: number
+}
+
+export interface DigestResponse {
+  status?: AiStatus
+  channel?: string
+  period?: string
+  generated_at?: string
+  subject?: string
+  top_patterns?: InsightPattern[]
+  action_items?: string[]
+  /** Prose summary. */
+  insights?: string
+  confidence?: number
+  error?: string
+  message?: string
+}
 
 const _apiBase = () => import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
 const _authFetch = (url: string, init: RequestInit) => {
@@ -9,6 +78,62 @@ const _authFetch = (url: string, init: RequestInit) => {
     ...init,
     headers: { ...(init.headers ?? {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
   })
+}
+
+// The effective-configuration quote (R7). Field names and their meaning are pinned server-side in
+// `core/quote.py`; this mirrors `PipelineQuoteResponse`.
+export interface JobQuote {
+  version: number
+  issued_at: number
+  expires_at: number
+  outputs: {
+    format?: string
+    shorts_count?: number
+    shorts_mode?: string
+    output_count?: number
+    visual_source?: string
+    languages?: string[]
+    target_languages?: string[]
+    duration_hint?: string | null
+  }
+  pricing: {
+    /** `fixed` = the credits below are what will be charged. `measured` = they are a floor. */
+    mode: 'fixed' | 'measured'
+    /** The recipe the charge will use; `null` for a measured job. */
+    recipe: string | null
+    credits: number
+    credits_remaining: number | null
+    /** Allowance plus purchased credits. Distinct from `credits_remaining`, which is null both for a
+     *  never-seeded account and for an unmetered one. */
+    credits_total: number | null
+    /** False when the balance read reported failure. It does not raise, so this flag is the only signal. */
+    balance_known: boolean
+    /** **The credit gate's own answer**, not a comparison done here. `null` means the gate could not be
+     *  asked — render that as "checked when you start", never as "yes". */
+    affordable: boolean | null
+    reservation: string
+    provider_cost_usd: number | null
+    /** False means the cost is not knowable yet — do not print a figure. */
+    provider_cost_known: boolean
+  }
+  funding: Array<{
+    operation: string
+    service: string
+    model: string | null
+    /** `user_key` = the creator's own invoice; `platform` = included; `free` = no key, no cost. */
+    source: 'user_key' | 'platform' | 'free' | 'unavailable'
+    usable: boolean
+  }>
+  readiness: {
+    ok: boolean
+    blockers: Array<{ error?: string; error_code?: string; channel?: string }>
+    channel: string | null
+  }
+  publishing: {
+    mode: string | null
+    channel: string | null
+    render_ready: boolean
+  }
 }
 
 // Route paths mirror the FastAPI router prefixes (which already include /api/)
@@ -31,6 +156,20 @@ export const jobsApi = {
     return response.data
   },
 
+  // POST /api/pipeline/quote — the effective-configuration quote (R7). Lives on jobsApi with the other
+  // /api/pipeline/* routes.
+  //
+  // Everything the submit screen needs to describe a job honestly, computed server-side from the same
+  // decision the credit gate and the completion charge use. `pricing.mode === 'measured'` means the job has
+  // no fixed price (an animated channel's clip count is not known until the script exists), so
+  // `pricing.credits` is a *floor* — render it as "from N credits", never as a total.
+  //
+  // `pricing.affordable` is `null` when the balance could not be read, which is not the same as `true`.
+  quote: async (config: Record<string, unknown>): Promise<JobQuote> => {
+    const response = await apiClient.post<JobQuote>('/api/pipeline/quote', config)
+    return response.data
+  },
+
   // POST /api/pipeline/run (alias used by Create flow SubmitPage)
   run: async (config: {
     topic: string
@@ -48,6 +187,17 @@ export const jobsApi = {
   },
 
   // POST /api/pipeline/jobs/action { job_id, action: cancel | retry | resume-from-merge }
+  // POST /api/pipeline/jobs/delete — remove job RECORDS only (never videos, never running jobs).
+  deleteMany: async (jobIds: string[]) => {
+    const response = await apiClient.post('/api/pipeline/jobs/delete', { job_ids: jobIds })
+    return response.data as {
+      ok: boolean
+      deleted: number
+      deleted_ids: string[]
+      skipped: Array<{ job_id: string; reason: string }>
+    }
+  },
+
   action: async (jobId: string, action: 'cancel' | 'retry' | 'resume-from-merge') => {
     if (action === 'cancel') {
       // Cancel a SPECIFIC job by ID via the kill endpoint (marks the persisted
@@ -88,9 +238,14 @@ export const jobsApi = {
 }
 
 export const channelsApi = {
-  // GET /api/channels
-  list: async () => {
-    const response = await apiClient.get<{ ok: boolean; channels: Channel[] }>('/api/channels')
+  // GET /api/channels[?all=true]
+  // Scoped to the caller's own channels by default -- for admins too. `all` is the explicit
+  // deployment-wide view an admin can ask for (the Admin page's job filter uses it); the server ignores
+  // it for everyone else.
+  list: async (all = false) => {
+    const response = await apiClient.get<{ ok: boolean; channels: Channel[]; scope?: string }>(
+      '/api/channels', all ? { params: { all: true } } : undefined,
+    )
     return response.data.channels ?? []
   },
 
@@ -104,6 +259,14 @@ export const channelsApi = {
   // POST /api/channels/{slug}/reset-auth - same dual local/hosted-OAuth response shape as `add`
   resetAuth: async (slug: string) => {
     const response = await apiClient.post(`/api/channels/${slug}/reset-auth`)
+    return response.data
+  },
+
+  // DELETE /api/channels/{slug} - removes the channel for the calling account. The server allows an admin
+  // to remove any channel (the listing is unfiltered for them), which is how a stale or foreign entry is
+  // cleaned up without touching the database by hand.
+  remove: async (slug: string): Promise<{ ok: boolean }> => {
+    const response = await apiClient.delete(`/api/channels/${encodeURIComponent(slug)}`)
     return response.data
   },
 
@@ -153,10 +316,16 @@ export const queueApi = {
 
   // POST /api/queue/add  { topic, channel_slug?, scheduled_date?, content_type?, payload? }
   add: async (topic: string, channelSlug?: string, scheduledDate?: string, contentType?: string, payload?: Record<string, unknown>) => {
+    // `scheduled` is a timestamptz. A bare "2026-10-18" is read as 00:00 UTC, which is the evening of the
+    // 17th west of Greenwich and put the topic on the wrong calendar day. Anchor a bare date to local
+    // noon instead; a full ISO instant is passed through untouched.
+    const scheduled = scheduledDate && /^\d{4}-\d{2}-\d{2}$/.test(scheduledDate)
+      ? new Date(`${scheduledDate}T12:00:00`).toISOString()
+      : (scheduledDate ?? null)
     const response = await apiClient.post('/api/queue/add', {
       topic,
       channel_slug: channelSlug ?? null,
-      scheduled_date: scheduledDate ?? null,
+      scheduled_date: scheduled,
       content_type: contentType ?? null,
       payload: payload ?? null,
     })
@@ -214,6 +383,13 @@ export const voiceApi = {
     return r.data
   },
 
+  // GET /api/voices/languages - canonical dubbing languages
+  // (voice_config.LANGUAGE_VOICES, so the UI never hardcodes a second list)
+  languages: async (): Promise<string[]> => {
+    const r = await apiClient.get<{ ok: boolean; languages: string[] }>('/api/voices/languages')
+    return r.data.languages ?? []
+  },
+
   // GET /api/voices/assignments - { slug: voice_id } map
   assignments: async (): Promise<Record<string, string>> => {
     const r = await apiClient.get<{ ok: boolean; assignments: Record<string, string> }>('/api/voices/assignments')
@@ -243,6 +419,64 @@ export const voiceApi = {
     const r = await apiClient.post('/api/voices/elevenlabs/settings', settings)
     return r.data
   },
+
+  // GET /api/voices/preview/:voiceId — a short synthesised sample, cached server-side.
+  // Fetched as a blob because the endpoint needs the bearer token, which an <audio src> cannot send.
+  preview: async (voiceId: string): Promise<string> => {
+    const r = await apiClient.get(`/api/voices/preview/${encodeURIComponent(voiceId)}`, {
+      responseType: 'blob',
+    })
+    return URL.createObjectURL(r.data as Blob)
+  },
+}
+
+// ── Admin API (W9 margin) ─────────────────────────────────────────────────────
+// Cross-user platform intelligence, gated server-side by require_admin.
+export const adminApi = {
+  // GET /api/admin/margin?days=30
+  margin: async (days = 30): Promise<{
+    ok: boolean
+    days: number
+    generated_at: string
+    throttle_ratio: number
+    totals: {
+      users: number
+      paying_users: number
+      revenue_usd: number
+      cost_usd: number
+      priced_cost_usd: number
+      margin_pct: number | null
+      custom_priced_users: number
+    }
+    by_plan: Array<{
+      plan: string
+      users: number
+      revenue_usd: number
+      cost_usd: number
+      margin_pct: number | null
+      custom_pricing: boolean
+    }>
+    top_spenders: MarginUser[]
+    users: MarginUser[]
+  }> => {
+    const r = await apiClient.get('/api/admin/margin', { params: { days } })
+    return r.data
+  },
+}
+
+export interface MarginUser {
+  user_id: string
+  email: string | null
+  plan: string
+  credits_remaining: number | null
+  cost_usd: number
+  events: number
+  byok_events: number
+  revenue_usd: number | null
+  margin_pct: number | null
+  custom_pricing: boolean
+  throttled: boolean
+  top_provider: string | null
 }
 
 // ── BYOK API Keys ─────────────────────────────────────────────────────────────
@@ -261,6 +495,17 @@ export const byokApi = {
     return data && typeof data === 'object' && data.keys && typeof data.keys === 'object'
       ? data.keys
       : data
+  },
+
+  // Whether each provider will actually work for this caller, and on whose key (R4/F1).
+  // `status` above answers "what have I stored", which cannot tell a bundled-credit customer (funded by
+  // the platform, nothing stored) apart from an account with nothing configured at all. The onboarding
+  // checklist needs this one.
+  readiness: async (): Promise<Record<string, ProviderReadiness>> => {
+    const response = await apiClient.get<{ readiness?: Record<string, ProviderReadiness> }>(
+      '/api/user/api-keys',
+    )
+    return response.data?.readiness ?? {}
   },
 
   // POST /api/user/api-keys  { service, key }
@@ -350,6 +595,8 @@ export type ShortsAnimatedJob = {
 }
 
 export type ShortsScriptJob = {
+  duration_seconds?: number
+  measured_duration_seconds?: number
   status: 'idle' | 'running' | 'done' | 'failed'
   topic?: string
   message?: string
@@ -357,6 +604,12 @@ export type ShortsScriptJob = {
   video_url?: string | null
   youtube_url?: string | null
   error?: string | null
+  job_id?: string
+  youtube_id?: string
+  channel_slug?: string
+  privacy_status?: 'private' | 'unlisted' | 'public'
+  thumbnail_data_url?: string | null
+  thumbnail?: { ok: boolean; reason?: string | null; detail: string; retryable?: boolean }
 }
 
 export type ShortsLibraryItem = {
@@ -409,7 +662,14 @@ export const shortsApi = {
     thumbDataUrl?: string
     visualSource?: string
     artStyle?: string
+    imageProvider?: string
     bgMusicPath?: string
+    privacy_status?: 'private' | 'unlisted' | 'public'
+    publish_approved?: boolean
+    thumbnail_text?: string
+    tts_provider?: 'edge' | 'gtts' | 'elevenlabs'
+    captions_enabled?: boolean
+    duration_seconds?: number
   }): Promise<{ ok: boolean }> => {
     const r = await apiClient.post('/api/shorts/script/run', payload)
     return r.data
@@ -428,7 +688,9 @@ export const shortsApi = {
     platforms?: string[]
     channel_slug?: string
   }): Promise<{ ok: boolean; job_id?: string }> => {
-    const r = await apiClient.post('/api/shorts/pipeline-run', payload)
+    // `/api/shorts/pipeline/run` — the old "/pipeline-run" never existed, so every "Run" on a Short queued
+    // item 404'd and the catch below (which only reports 402s) swallowed it: the button looked dead.
+    const r = await apiClient.post('/api/shorts/pipeline/run', payload)
     return r.data
   },
 }
@@ -452,9 +714,38 @@ export const billingApi = {
     return response.data
   },
 
-  // GET /api/billing/usage → { plan, used, limit, pct }
-  usage: async (): Promise<{ plan: string; used: number; limit: number; pct: number }> => {
+  // GET /api/billing/usage → { plan, used, limit, pct, credits_remaining?, plan_credits?, recipe_costs? }
+  usage: async (): Promise<{
+    plan: string
+    used: number
+    limit: number
+    pct: number
+    credits_remaining?: number | null
+    plan_credits?: number | null
+    credits_topup?: number | null
+    credits_total?: number | null
+    recipe_costs?: Record<string, number>
+    channels_used?: number | null
+    channels_limit?: number | null
+  }> => {
     const response = await apiClient.get('/api/billing/usage')
+    return response.data
+  },
+
+  // GET /api/billing/packages → { stripe_configured, packages }
+  // Only packages whose Stripe price ID is configured are returned, so this can
+  // legitimately be empty. `stripe_configured` says whether that is why.
+  packages: async (): Promise<{
+    stripe_configured: boolean
+    packages: { id: string; credits: number; price_usd: number; label: string }[]
+  }> => {
+    const response = await apiClient.get('/api/billing/packages')
+    return response.data
+  },
+
+  // POST /api/billing/topup { package_id } → { checkout_url }
+  topup: async (packageId: string): Promise<{ checkout_url: string }> => {
+    const response = await apiClient.post('/api/billing/topup', { package_id: packageId })
     return response.data
   },
 }
@@ -518,6 +809,50 @@ export const socialApi = {
 
 // ── Analytics API ─────────────────────────────────────────────────────────────
 export const analyticsApi = {
+  // POST /api/analytics/sync — pull metrics for one channel (writes rows, so it is scoped server-side).
+  sync: async (channelSlug?: string, lookbackDays = 30) => {
+    const response = await apiClient.post('/api/analytics/sync', {
+      channel_slug: channelSlug,
+      lookback_days: lookbackDays,
+    })
+    return response.data as {
+      success: boolean
+      synced: number
+      errors: number
+      imported?: number
+      message?: string
+      error?: string
+    }
+  },
+  // GET /api/analytics/fleet — per-channel sync health (admins see all, users see their own).
+  fleet: async () => {
+    const response = await apiClient.get('/api/analytics/fleet')
+    return response.data as {
+      ok: boolean
+      channels: Array<{
+        channel_slug: string
+        channel_name: string | null
+        category_id: string | null
+        videos: number
+        measured: number
+        views: number
+        last_sync: string | null
+        pending_topics: number
+      }>
+    }
+  },
+  // POST /api/analytics/sync-all — admin-only fleet sync.
+  syncAll: async () => {
+    const response = await apiClient.post('/api/analytics/sync-all')
+    return response.data as {
+      ok: boolean
+      channels: number
+      ok_count?: number
+      synced: number
+      imported: number
+      failed: Array<{ channel: string; error: string }>
+    }
+  },
   // GET /api/db/stats - channel stats (videos, views, subs, watch time)
   channelStats: async (channelSlug?: string) => {
     const response = await apiClient.get('/api/db/stats', {
@@ -535,9 +870,72 @@ export const analyticsApi = {
     const response = await apiClient.get('/api/db/videos', { params: { limit } })
     return response.data
   },
-  // GET /api/analytics/insights - YouTube analytics data
-  insights: async (channelSlug?: string) => {
-    const response = await apiClient.get('/api/analytics/insights', {
+  // GET /api/extension/ctr/summary - impressions/CTR the browser extension read out of Studio.
+  // Empty unless the extension is installed and capture is switched on; the panel says so rather
+  // than rendering zeros, because "no readings" and "a CTR of zero" are different things.
+  ctrSummary: async (limit = 100) => {
+    const response = await apiClient.get('/api/extension/ctr/summary', { params: { limit } })
+    return response.data
+  },
+  // POST /api/studio/ctr-snapshots → { ok, snapshot }
+  // Record one cumulative CTR reading (authenticated-user path; the extension uses /api/extension/ctr).
+  createCtrSnapshot: async (payload: {
+    youtube_id: string
+    channel_slug?: string
+    impressions?: number
+    ctr_percent?: number
+    source?: string
+  }) => {
+    const response = await apiClient.post('/api/studio/ctr-snapshots', payload)
+    return response.data
+  },
+  // §2.3 thumbnail A/B. The verdict comes from the server, which refuses to name a winner below a
+  // sample floor -- so the panel renders whatever state it is given rather than picking a number.
+  thumbnailAb: async (videoId: string) => {
+    const response = await apiClient.get(`/api/thumbnail/ab/${videoId}`)
+    return response.data
+  },
+  thumbnailAbBaseline: async (videoId: string, label?: string) => {
+    const response = await apiClient.post(`/api/thumbnail/ab/${videoId}/baseline`, { label })
+    return response.data
+  },
+  thumbnailAbImport: async (videoId: string, channelSlug: string) => {
+    const response = await apiClient.post(`/api/thumbnail/ab/${videoId}/import`, { channel_slug: channelSlug })
+    return response.data
+  },
+  thumbnailAbChallenger: async (videoId: string, thumbnailData: string, label?: string) => {
+    const response = await apiClient.post(`/api/thumbnail/ab/${videoId}/challenger`, {
+      thumbnail_data: thumbnailData,
+      label,
+    })
+    return response.data
+  },
+  thumbnailAbStop: async (videoId: string) => {
+    const response = await apiClient.post(`/api/thumbnail/ab/${videoId}/stop`)
+    return response.data
+  },
+  thumbnailAbSelect: async (videoId: string, variantId: number) => {
+    const response = await apiClient.post(`/api/thumbnail/ab/${videoId}/select/${variantId}`)
+    return response.data
+  },
+  // POST /api/studio/thumbnail-ab/variants/{variant_id}/select → { ok, selected_variant, youtube_id }
+  // Creator's explicit override: retire every other variant, leave this one live.
+  selectThumbnailVariant: async (variantId: number) => {
+    const response = await apiClient.post(
+      `/api/studio/thumbnail-ab/variants/${encodeURIComponent(String(variantId))}/select`,
+    )
+    return response.data
+  },
+  // POST /api/studio/thumbnail-ab/variants/{variant_id}/retire → { ok, variant }
+  retireThumbnailVariant: async (variantId: number) => {
+    const response = await apiClient.post(
+      `/api/studio/thumbnail-ab/variants/${encodeURIComponent(String(variantId))}/retire`,
+    )
+    return response.data
+  },
+  // GET /api/analytics/insights - AI insight cards + actions (contract: InsightsResponse)
+  insights: async (channelSlug?: string): Promise<InsightsResponse> => {
+    const response = await apiClient.get<InsightsResponse>('/api/analytics/insights', {
       params: channelSlug ? { channel_slug: channelSlug } : {},
     })
     return response.data
@@ -570,9 +968,41 @@ export const analyticsApi = {
     })
     return response.data
   },
-  // GET /api/analytics/digest - AI weekly digest summary
-  digest: async (channelSlug?: string, lookbackDays = 7) => {
-    const response = await apiClient.get('/api/analytics/digest', {
+  // GET /api/analytics/ctr-retention - captured click-through paired against retention, per video.
+  // The pairing the extension made possible: click-through is read off the creator's own Studio page
+  // and retention comes from the Analytics API, so their relationship separates a *packaging* problem
+  // from a *content* problem from a *topic* problem. The server does the classification and refuses to
+  // chart anything below a sample floor, so the panel renders whatever state it is handed.
+  ctrRetention: async (channelSlug?: string) => {
+    const response = await apiClient.get('/api/analytics/ctr-retention', {
+      params: channelSlug ? { channel_slug: channelSlug } : {},
+    })
+    return response.data
+  },
+  // GET /api/analytics/retention-pattern - where this channel's recent videos lose viewers (§5.4).
+  // The same line goes into the script prompt before the next script is written, so the panel that
+  // shows it is not a chart: it is the creator's only sight of what is shaping their output.
+  retentionPattern: async (channelSlug?: string) => {
+    const response = await apiClient.get('/api/analytics/retention-pattern', {
+      params: channelSlug ? { channel_slug: channelSlug } : {},
+    })
+    return response.data
+  },
+  // GET /api/analytics/retention/{videoId} - where viewers left, and which script segment they left during
+  retention: async (videoId: string, refresh = false) => {
+    const response = await apiClient.get(`/api/analytics/retention/${encodeURIComponent(videoId)}`, {
+      params: { refresh },
+    })
+    return response.data
+  },
+  // POST /api/analytics/retention/{videoId}/explain - Claude reads the cliffs against the stored script
+  explainRetention: async (videoId: string) => {
+    const response = await apiClient.post(`/api/analytics/retention/${encodeURIComponent(videoId)}/explain`)
+    return response.data
+  },
+  // GET /api/analytics/digest - AI weekly digest (contract: DigestResponse)
+  digest: async (channelSlug?: string, lookbackDays = 7): Promise<DigestResponse> => {
+    const response = await apiClient.get<DigestResponse>('/api/analytics/digest', {
       params: {
         ...(channelSlug ? { channel_slug: channelSlug } : {}),
         lookback_days: lookbackDays,
@@ -603,6 +1033,16 @@ export const analyticsApi = {
   },
 }
 
+export type ScheduleConfig = {
+  enabled: boolean
+  time: string          // first slot, kept for compatibility
+  times: string[]       // every daily slot, "HH:MM" local wall clock (e.g. 09:00 + 18:00)
+  timezone: string      // IANA name
+  days: string[]        // ["mon", ...]
+  per_run: number       // topics started at each slot
+  last_run_slot?: string | null
+}
+
 export const schedulerApi = {
   // GET /api/scheduler/status?channel_slug
   status: async (channelSlug?: string) => {
@@ -616,12 +1056,43 @@ export const schedulerApi = {
     const response = await apiClient.get('/api/scheduler/job-history', { params: { limit } })
     return response.data
   },
+  // GET /api/scheduler/schedule - this account's own publishing schedule
+  getSchedule: async (): Promise<{
+    ok: boolean
+    schedule: ScheduleConfig
+    next_run_at: string | null
+    local_now: string
+    server_now: string
+  }> => {
+    const response = await apiClient.get('/api/scheduler/schedule')
+    return response.data
+  },
+  // PUT /api/scheduler/schedule - the runner reads this; no process restart, no .env write
+  saveSchedule: async (payload: ScheduleConfig): Promise<{
+    ok: boolean
+    schedule: ScheduleConfig
+    next_run_at: string | null
+  }> => {
+    const response = await apiClient.put('/api/scheduler/schedule', payload)
+    return response.data
+  },
   // POST /api/scheduler/run-next
-  runNext: async (channelSlug?: string) => {
+  // Without `topicId` this runs the next pending topic; with it, exactly that queued row.
+  // Either way the row is DEQUEUED server-side (marked processing → done/failed), which is
+  // what the queue's Run buttons must use — calling the pipeline directly left the row pending.
+  runNext: async (channelSlug?: string, topicId?: number) => {
     const response = await apiClient.post('/api/scheduler/run-next', {
       channel_slug: channelSlug ?? null,
+      ...(topicId != null ? { topic_id: topicId } : {}),
     })
-    return response.data
+    return response.data as {
+      ok: boolean
+      topic: string
+      topic_id: number
+      job_id?: string
+      channel_slug: string | null
+      topic_type: string
+    }
   },
 
   // POST /api/scheduler/test-run - triggers publish_next() directly
@@ -632,9 +1103,9 @@ export const schedulerApi = {
 }
 
 export const automationApi = {
-  // GET /api/settings - returns current automation settings from .env
+  // GET /api/env - returns platform .env values (admin-only; non-admin gets DB settings)
   get: async () => {
-    const response = await apiClient.get('/api/settings')
+    const response = await apiClient.get('/api/env')
     return response.data
   },
   // POST /api/settings/sync-env - save toggles to .env
@@ -715,9 +1186,11 @@ export const notificationsApi = {
 export type UserProfile = {
   user_id: string
   email: string
-  plan: 'free' | 'pro' | 'enterprise'
+  plan: 'free' | 'starter' | 'pro' | 'studio' | 'agency' | 'unlimited' | 'enterprise'
   display_name: string
-  videos_used_this_month: number
+  /** @deprecated Credits are the currency; the video counter is no longer
+   *  incremented or displayed. Kept optional for API back-compat. */
+  videos_used_this_month?: number
 }
 
 export const accountApi = {
@@ -749,9 +1222,24 @@ export const channelProfilesApi = {
 
   // POST /api/channel-profiles/{slug} (partial save — only sent fields are updated)
   update: async (slug: string, fields: {
+    shorts_duration_seconds?: number
     default_visual_source?: string
     default_art_style?: string
+    default_image_provider?: string
     captions_enabled?: boolean
+    made_for_kids?: boolean | null
+    // YouTube category id for future uploads. Null clears the per-channel choice and falls back to the
+    // platform default, which is why it is sent explicitly rather than omitted.
+    category_id?: string | null
+    // Multilingual dubbing. `target_languages` is the FULL ordered list and the
+    // FIRST entry is the primary language -- `resolve_multilingual_config()`
+    // treats languages[0] as primary and generates a variant for every later
+    // entry. So it must include the channel's own language, not just the extras;
+    // a list of length 1 means "no variants", which is why the pipeline's guard
+    // is `len(target_languages) > 1`.
+    multilingual_enabled?: boolean
+    multilingual_strategy?: string
+    target_languages?: string[]
   }) => {
     const response = await apiClient.post(`/api/channel-profiles/${encodeURIComponent(slug)}`, fields)
     return response.data as { ok: boolean; profile: Record<string, any> }
@@ -759,6 +1247,21 @@ export const channelProfilesApi = {
 }
 
 export const channelOpsApi = {
+  // GET /api/channel/video-categories — YouTube's real, region-specific category list plus this
+  // channel's saved default. Cached server-side for a day (1 quota unit per region).
+  videoCategories: async (channel?: string, region = 'SE') => {
+    const response = await apiClient.get('/api/channel/video-categories', {
+      params: { ...(channel ? { channel } : {}), region },
+    })
+    return response.data as {
+      ok: boolean
+      region: string
+      channel: string
+      default_id: string | null
+      categories: Array<{ id: string; title: string }>
+    }
+  },
+
   // GET /api/channel/audit?slug
   audit: async (slug?: string) => {
     const response = await apiClient.get('/api/channel/audit', {
@@ -804,6 +1307,18 @@ export const channelOpsApi = {
     return response.data
   },
 
+  // POST /api/channel/bulk-preview  { videoIds, operations, channel } - dry run, writes nothing
+  bulkPreview: async (videoIds: string[], operations: Array<{ field: string; action: string; value?: any }>, channel?: string) => {
+    const response = await apiClient.post('/api/channel/bulk-preview', { videoIds, operations, channel })
+    return response.data
+  },
+
+  // POST /api/channel/bulk-apply  { videoIds, operations, channel, confirm } - edits live videos
+  bulkApply: async (videoIds: string[], operations: Array<{ field: string; action: string; value?: any }>, channel?: string, confirm = false) => {
+    const response = await apiClient.post('/api/channel/bulk-apply', { videoIds, operations, channel, confirm })
+    return response.data
+  },
+
   // POST /api/channel/fix-all  { channel }
   fixAll: async (channel?: string) => {
     const response = await apiClient.post('/api/channel/fix-all', { channel })
@@ -843,6 +1358,13 @@ export const channelOpsApi = {
   // GET /api/channel/rank-history?videoId&keyword → past rank snapshots, most recent first
   rankHistory: async (videoId: string, keyword: string) => {
     const response = await apiClient.get('/api/channel/rank-history', { params: { videoId, keyword } })
+    return response.data
+  },
+
+  // POST /api/channel/collaborators - creators in this niche worth approaching.
+  // Costs the same YouTube quota as keywordClusters, and shares its 5/hour per-user budget.
+  collaborators: async (channel?: string) => {
+    const response = await apiClient.post('/api/channel/collaborators', { channel })
     return response.data
   },
 
@@ -886,6 +1408,9 @@ export const studioApi = {
     tags?: string[]
     channel?: string
     thumbnail_path?: string
+    thumbnail_data?: string
+    privacy_status?: 'public' | 'unlisted' | 'private'
+    notify_subscribers?: boolean
   }) => {
     const response = await apiClient.post('/api/studio/upload-main', payload)
     return response.data
@@ -901,6 +1426,8 @@ export const studioApi = {
     youtube_shorts?: boolean
     social_platforms?: boolean
     include_stories?: boolean
+    privacy_status?: 'public' | 'unlisted' | 'private'
+    notify_subscribers?: boolean
   }) => {
     const response = await apiClient.post('/api/studio/upload-clips', payload)
     return response.data
@@ -932,6 +1459,163 @@ export const studioApi = {
   importExtract: async (url: string, clips: Array<{ start: number; end: number; label: string }>) => {
     const response = await apiClient.post('/api/studio/import/extract', { url, clips })
     return response.data
+  },
+
+  // ── Creator Studio assets (Phase 1) ───────────────────────────────────────
+  // A creator's own source video, before it is published. Owner-scoped on the server; URLs carry
+  // `public_id`, never a filesystem path.
+
+  // GET /api/studio/assets?status=&limit=&offset= → { ok, count, assets[] }
+  assets: async (params?: { status?: string; limit?: number; offset?: number }) => {
+    const response = await apiClient.get('/api/studio/assets', { params })
+    return response.data
+  },
+
+  // GET /api/studio/assets/{public_id} → { ok, asset, publications[] }
+  asset: async (publicId: string) => {
+    const response = await apiClient.get(`/api/studio/assets/${encodeURIComponent(publicId)}`)
+    return response.data
+  },
+
+  // POST /api/studio/assets (multipart) → { ok, asset }
+  // Streamed by the server with a size cap, and validated with ffprobe (extension alone is not
+  // enough). `onProgress` is the browser's upload byte count, not a render percentage.
+  createAsset: async (
+    file: File,
+    opts?: {
+      title?: string
+      channelSlug?: string
+      onProgress?: (percent: number) => void
+      signal?: AbortSignal
+    },
+  ) => {
+    const form = new FormData()
+    form.append('file', file)
+    if (opts?.title) form.append('title', opts.title)
+    if (opts?.channelSlug) form.append('channel_slug', opts.channelSlug)
+    const response = await apiClient.post('/api/studio/assets', form, {
+      // Let the browser set the multipart boundary; only the auth header is added by the client.
+      headers: { 'Content-Type': 'multipart/form-data' },
+      signal: opts?.signal,
+      onUploadProgress: (event) => {
+        if (!opts?.onProgress) return
+        const total = event.total ?? 0
+        if (total > 0) opts.onProgress(Math.min(99, Math.round((event.loaded / total) * 100)))
+      },
+    })
+    return response.data
+  },
+
+  // PATCH /api/studio/assets/{public_id} → { ok, asset }
+  updateAsset: async (
+    publicId: string,
+    payload: { title?: string; description?: string; tags?: string[]; channel_slug?: string | null },
+  ) => {
+    const response = await apiClient.patch(
+      `/api/studio/assets/${encodeURIComponent(publicId)}`,
+      payload,
+    )
+    return response.data
+  },
+
+  // POST /api/studio/assets/{public_id}/preview-url → { ok, url, expires_in }
+  // The file route needs the Authorization header, which a <video src> cannot send; this mints a
+  // short-lived, asset-scoped URL instead.
+  previewUrl: async (publicId: string) => {
+    const response = await apiClient.post(
+      `/api/studio/assets/${encodeURIComponent(publicId)}/preview-url`,
+      {},
+    )
+    return response.data as {
+      ok: boolean
+      url: string
+      expires_in: number
+      thumbnail_url?: string
+    }
+  },
+
+  // POST /api/studio/assets/{public_id}/thumbnail → { ok, asset }
+  // Extracts one frame from the source as the asset's cover image. Stored server-side so publish
+  // reuses the chosen frame instead of silently re-extracting a different one at upload time.
+  generateThumbnail: async (publicId: string, timeS?: number) => {
+    const response = await apiClient.post(
+      `/api/studio/assets/${encodeURIComponent(publicId)}/thumbnail`,
+      timeS !== undefined ? { time_s: timeS } : {},
+    )
+    return response.data
+  },
+
+  // POST /api/studio/assets/{public_id}/publications → { ok, job_id, publication }
+  // Durable: `publishing` → `published` (with external_id) or `failed` (with last_error). 409 when
+  // the asset is already publishing or already published.
+  publishAsset: async (
+    publicId: string,
+    payload: {
+      platform?: 'youtube'
+      channel_slug?: string
+      title?: string
+      description?: string
+      tags?: string[]
+      privacy_status?: 'public' | 'unlisted' | 'private'
+      scheduled_at?: string
+    },
+  ) => {
+    const response = await apiClient.post(
+      `/api/studio/assets/${encodeURIComponent(publicId)}/publications`,
+      payload,
+    )
+    return response.data
+  },
+
+  // GET /api/studio/publications/{publication_id}/analytics → { available, views, watch_time_minutes, avg_view_duration_seconds, analytics_fetched_at, reason? }
+  // Real YouTube Analytics per publication. `available: false` means "not published yet" or
+  // "analytics unavailable" — never zeros masquerading as measured data.
+  publicationAnalytics: async (publicationId: number) => {
+    const response = await apiClient.get(
+      `/api/studio/publications/${encodeURIComponent(String(publicationId))}/analytics`,
+    )
+    return response.data as {
+      available: boolean
+      reason: string | null
+      views: number | null
+      watch_time_minutes: number | null
+      avg_view_duration_seconds: number | null
+      analytics_fetched_at: string | null
+    }
+  },
+
+  // GET /api/studio/recoverable-renders → { ok, count, renders: [{job_id,title,status,channel_slug,size_bytes,start_time}] }
+  // Finished pipeline jobs whose render is still on disk and not yet in the library. This is the
+  // "the upload failed, not the render" recovery path.
+  recoverableRenders: async () => {
+    const response = await apiClient.get('/api/studio/recoverable-renders')
+    return response.data as {
+      ok: boolean
+      count: number
+      renders: Array<{
+        job_id: string
+        title: string
+        status: string
+        channel_slug: string | null
+        youtube_id: string | null
+        start_time: string | null
+        size_bytes: number
+      }>
+    }
+  },
+
+  // POST /api/studio/recoverable-renders/{job_id} → { ok, asset, already_in_library }
+  // Idempotent: the same job returns the same asset, so a double click cannot publish twice.
+  recoverRender: async (jobId: string) => {
+    const response = await apiClient.post(
+      `/api/studio/recoverable-renders/${encodeURIComponent(jobId)}`,
+      {},
+    )
+    return response.data as {
+      ok: boolean
+      asset: { public_id: string }
+      already_in_library: boolean
+    }
   },
 }
 
@@ -1009,11 +1693,13 @@ export const calendarApi = {
     return response.data
   },
 
-  // POST /api/calendar/update-scheduled  { topic_id, scheduled_date }
-  updateScheduled: async (topicId: number, scheduledDate: string | null) => {
+  // POST /api/calendar/update-scheduled  { topic_id, scheduled_at }
+  // `scheduledAt` is an ISO instant, not a date: the runner compares against the current time, so a
+  // topic for 18:00 must carry 18:00. Pass null to take it off the calendar.
+  updateScheduled: async (topicId: number, scheduledAt: string | null) => {
     const response = await apiClient.post('/api/calendar/update-scheduled', {
       topic_id: topicId,
-      scheduled_date: scheduledDate,
+      scheduled_at: scheduledAt,
     })
     return response.data
   },
@@ -1060,8 +1746,13 @@ export const kidsApi = {
   },
 
   // POST /api/promo/animated/approve → { ok, status }
-  approve: async (genId: string) => {
-    const response = await apiClient.post('/api/promo/animated/approve', { gen_id: genId })
+  // `coverageRatio` is the animation cost dial (core/animation_coverage.py): the
+  // fraction of scenes that get their own generated clip. Omit for the default.
+  approve: async (genId: string, coverageRatio?: number) => {
+    const response = await apiClient.post('/api/promo/animated/approve', {
+      gen_id: genId,
+      ...(coverageRatio === undefined ? {} : { coverage_ratio: coverageRatio }),
+    })
     return response.data
   },
 
@@ -1079,6 +1770,63 @@ export const kidsApi = {
       description: params.description ?? '',
       tags: params.tags ?? '',
       channel: params.channel ?? '',
+    })
+    return response.data
+  },
+
+  // PATCH /api/promo/animated/scene → { ok, scene }   (free)
+  editScene: async (params: {
+    genId: string
+    sceneIndex: number
+    narration?: string
+    visualKeyword?: string
+    speaker?: string
+  }) => {
+    const response = await apiClient.patch('/api/promo/animated/scene', {
+      gen_id: params.genId,
+      scene_index: params.sceneIndex,
+      narration: params.narration,
+      visual_keyword: params.visualKeyword,
+      speaker: params.speaker,
+    })
+    return response.data
+  },
+
+  // POST /api/promo/animated/quote → { credits, clips, segments, cost_usd,
+  //                                     byok_credits, affordable, credits_remaining }
+  // The coverage dial changes what a render costs, so the price comes from the
+  // server rather than being hard-coded here -- hard-coding it is how the
+  // displayed price drifted 6-13x below the real charge. Free, no side effects.
+  quote: async (genId: string, coverageRatio?: number) => {
+    const response = await apiClient.post('/api/promo/animated/quote', {
+      gen_id: genId,
+      ...(coverageRatio === undefined ? {} : { coverage_ratio: coverageRatio }),
+    })
+    return response.data
+  },
+
+  // POST /api/promo/animated/scene/reroll → { ok, scene, credits_remaining }
+  // Costs one Claude call (utility = 1 credit). Deliberately NOT the 15-credit
+  // `scene_reroll` recipe: that buys a Kling clip, and per-scene clips do not
+  // exist yet, so this rewrites the storyboard rather than the video.
+  rerollScene: async (params: {
+    genId: string
+    sceneIndex: number
+    instructions?: string
+  }) => {
+    const response = await apiClient.post('/api/promo/animated/scene/reroll', {
+      gen_id: params.genId,
+      scene_index: params.sceneIndex,
+      instructions: params.instructions ?? '',
+    })
+    return response.data
+  },
+
+  // POST /api/promo/animated/scenes/reorder → { ok, segments }   (free)
+  reorderScenes: async (params: { genId: string; order: number[] }) => {
+    const response = await apiClient.post('/api/promo/animated/scenes/reorder', {
+      gen_id: params.genId,
+      order: params.order,
     })
     return response.data
   },
@@ -1194,6 +1942,31 @@ export const thumbnailApi = {
     return response.data as { ok: boolean; b64: string; mime: string }
   },
 
+  // POST /api/thumbnail/generate → { ok, b64, mime, path, width, height }
+  // Full thumbnail with text overlay (headline, subhead, badge, channel name).
+  // Supports faceless/hybrid modes and stock/Pollinations backgrounds.
+  generate: async (params: {
+    topic: string
+    thumbnail_text?: string
+    thumbnail_subtext?: string
+    badge?: string
+    channel_name?: string
+    mode?: 'faceless' | 'hybrid'
+    provider?: 'stock' | 'pollinations'
+    face_image_b64?: string
+    aspect?: 'landscape' | 'vertical'
+  }) => {
+    const response = await apiClient.post('/api/thumbnail/generate', params)
+    return response.data as {
+      ok: boolean
+      b64: string
+      mime: string
+      path: string
+      width: number
+      height: number
+    }
+  },
+
   // GET /api/pexels/bg?q= → { ok, b64, mime, url }
   pexelsBg: async (query: string) => {
     const response = await apiClient.get('/api/pexels/bg', { params: { q: query } })
@@ -1231,10 +2004,12 @@ export const visualsApi = {
 // ── YouTube API ───────────────────────────────────────────────────────────────
 export const youtubeApi = {
   // POST /api/youtube/set-thumbnail → { ok, message, video_id }
-  setThumbnail: async (videoId: string, thumbnailData: string) => {
+  setThumbnail: async (videoId: string, thumbnailData: string, channelSlug?: string, jobId?: string) => {
     const response = await apiClient.post('/api/youtube/set-thumbnail', {
       video_id: videoId,
       thumbnail_data: thumbnailData,
+      channel_slug: channelSlug,
+      job_id: jobId,
     })
     return response.data as { ok: boolean; message: string; video_id: string }
   },
@@ -1282,5 +2057,40 @@ export const brandingApi = {
       channel: channel ?? null,
     })
     return response.data as { ok: boolean; error?: string }
+  },
+}
+
+// ── Brand Kit API ─────────────────────────────────────────────────────────────
+export interface BrandKit {
+  channel_slug: string
+  avatar_url?: string | null
+  watermark_url?: string | null
+  intro_video_id?: string | null
+  outro_video_id?: string | null
+  thumbnail_template?: string | null
+  voice_id?: string | null
+}
+
+export const brandKitApi = {
+  // GET /api/brand-kit?channel= → BrandKit
+  get: async (channel?: string) => {
+    const response = await apiClient.get<BrandKit>('/api/brand-kit', {
+      params: channel ? { channel } : {},
+    })
+    return response.data
+  },
+
+  // PUT /api/brand-kit → BrandKit
+  upsert: async (payload: {
+    channel?: string
+    avatar_url?: string | null
+    watermark_url?: string | null
+    intro_video_id?: string | null
+    outro_video_id?: string | null
+    thumbnail_template?: string | null
+    voice_id?: string | null
+  }) => {
+    const response = await apiClient.put<BrandKit>('/api/brand-kit', payload)
+    return response.data
   },
 }
