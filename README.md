@@ -7,9 +7,13 @@
 The same route definitions drive the browser, prerenderer, sitemap, and Vercel
 routing. No new framework or browser installation is required to build.
 
-In Vercel, set the project **Root Directory** to `frontend/app`, use the committed
-`vercel.json`, and remove any dashboard Output Directory override or catch-all
-SPA rewrite. The Build Output API supplies the deployment's routing rules.
+In Vercel, use **Other** as the framework preset and set **Root Directory** to
+`./` for the standalone `autotube-frontend` repository (`frontend/app` only when
+deploying from the backend monorepo). The committed `vercel.json` runs
+`npm ci --legacy-peer-deps` to accommodate the existing React 19/Stripe peer
+mismatch, then `npm run build`. Remove any dashboard Output Directory override
+or catch-all SPA rewrite. The Build Output API supplies the deployment's routing
+rules.
 
 SEO is **off by default** while the domain is undecided:
 
