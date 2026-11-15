@@ -48,8 +48,15 @@ interface EpisodeQuote {
   clips: number
   generated_seconds: number
   cost_usd: number
+  /** What THIS user pays, given their own keys and plan. */
   credits: number
+  /** All-hosted price, with no own keys. */
+  platform_credits: number
+  /** Price with an own Kling key on this user's plan. */
   byok_credits: number
+  /** BYOK platform fee included in `credits` (0 on Pro and above). */
+  fee_credits: number
+  byok_providers: string[]
   coverage_ratio: number
   credits_remaining: number | null
   affordable: boolean

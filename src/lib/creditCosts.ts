@@ -81,18 +81,19 @@ export const UNIT_CREDITS = {
  *
  * Quoting the flat `anime_longform` gate of 180 in this table was wrong: that is
  * the up-front affordability gate, not the charge. It also contradicted this
- * page's own prose, which already said "about 220 credits ... up to 530".
+ * page's own prose.
  *
- * A 2-minute episode is 24 segments; these are its real quotes.
+ * A 2-minute episode is 24 segments; these are its real quotes, priced at the
+ * resolution the Kling client actually renders (720p by default).
  */
 export const ANIMATED_EPISODE = {
   minutes: 2,
   segments: 24,
   defaultCoverage: 0.3,
   /** `episode_quote(24)` -- the recommended ~30% coverage. */
-  defaultCredits: 221,
+  defaultCredits: 159,
   /** `episode_quote(24, 1.0)` -- every scene animated. */
-  fullCredits: 530,
+  fullCredits: 345,
 } as const
 
 /** How many of a unit a plan's monthly allowance buys. */
