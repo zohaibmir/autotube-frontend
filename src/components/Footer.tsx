@@ -21,6 +21,7 @@ const COLUMNS = [
       { label: 'Free SEO Analyzer', to: '/tools/seo-analyzer' },
       { label: 'Browser Extension', to: '/extension' },
       { label: 'FAQ', to: '/faq' },
+      { label: 'API key guides', to: '/guides/api-keys' },
     ],
   },
   {

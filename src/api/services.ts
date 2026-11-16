@@ -289,7 +289,41 @@ export const channelsApi = {
   },
 }
 
+// One script model the account can pick (PRICING_STRATEGY.md §6.11).
+export interface ScriptModelChoice {
+  model: string
+  label: string
+  provider: 'anthropic' | 'openai' | 'gemini' | string
+  tier: 'standard' | 'premium' | string
+  input_usd_per_mtok: number | null
+  output_usd_per_mtok: number | null
+  // 'byok' (your key), 'platform' (our key, billed in credits) or null (nobody can pay -> falls back).
+  funded_by?: 'byok' | 'platform' | null
+  // Credits a long-form episode costs on top of the plan price (negative = saves credits).
+  credits_delta_longform: number
+}
+
+export interface ScriptModelState {
+  allowed: boolean
+  selected: string | null
+  effective: string
+  effective_provider: string | null
+  fallback: string | null
+  ignored: string | null
+  system_default: string
+  choices: ScriptModelChoice[]
+}
+
 export const settingsApi = {
+  getScriptModel: async () => {
+    const response = await apiClient.get<ScriptModelState>('/api/settings/script-model')
+    return response.data
+  },
+  // An empty model clears the choice and follows the system default.
+  putScriptModel: async (model: string) => {
+    const response = await apiClient.put<ScriptModelState>('/api/settings/script-model', { model })
+    return response.data
+  },
   getApiKeys: async () => {
     const response = await apiClient.get('/api/settings/api-keys')
     return response.data
@@ -519,6 +553,13 @@ export const byokApi = {
     const response = await apiClient.delete(`/api/user/api-keys/${service}`)
     return response.data
   },
+
+  // POST /api/user/api-keys/:service/test - cheap read-only check of the stored key.
+  // `ok` is null when the provider cannot be tested or did not answer.
+  test: async (service: string): Promise<{ service: string; ok: boolean | null; message: string }> => {
+    const response = await apiClient.post(`/api/user/api-keys/${service}/test`)
+    return response.data
+  },
 }
 
 // ── Community Posts API ───────────────────────────────────────────────────────
@@ -702,9 +743,22 @@ export const billingApi = {
     return response.data
   },
 
-  // POST /api/billing/checkout { plan_id } → { checkout_url }
-  checkout: async (planId: string): Promise<{ checkout_url: string }> => {
-    const response = await apiClient.post('/api/billing/checkout', { plan_id: planId })
+  // POST /api/billing/checkout { plan_id, interval } → { checkout_url }
+  checkout: async (
+    planId: string,
+    interval: 'month' | 'year' = 'month',
+  ): Promise<{ checkout_url: string }> => {
+    const response = await apiClient.post('/api/billing/checkout', { plan_id: planId, interval })
+    return response.data
+  },
+
+  // GET /api/billing/plan → current plan, billing interval, and which plans are sold yearly
+  plan: async (): Promise<{
+    plan: string
+    billing_interval?: 'month' | 'year'
+    annual_plans?: Record<string, { price_usd: number; monthly_equivalent_usd: number }>
+  }> => {
+    const response = await apiClient.get('/api/billing/plan')
     return response.data
   },
 
@@ -727,6 +781,8 @@ export const billingApi = {
     recipe_costs?: Record<string, number>
     channels_used?: number | null
     channels_limit?: number | null
+    renders_used?: number | null
+    renders_limit?: number | null
   }> => {
     const response = await apiClient.get('/api/billing/usage')
     return response.data
@@ -1712,6 +1768,12 @@ export const publicApi = {
     const response = await apiClient.post('/api/public/seo-analyze', { url })
     return response.data
   },
+
+  // GET /api/public/api-key-costs - typical provider cost of one video, per BYOK service
+  apiKeyCosts: async (): Promise<{ providers: Record<string, { usd: number | null; basis: string; estimated?: boolean }> }> => {
+    const response = await apiClient.get('/api/public/api-key-costs')
+    return response.data
+  },
 }
 
 
@@ -1748,10 +1810,12 @@ export const kidsApi = {
   // POST /api/promo/animated/approve → { ok, status }
   // `coverageRatio` is the animation cost dial (core/animation_coverage.py): the
   // fraction of scenes that get their own generated clip. Omit for the default.
-  approve: async (genId: string, coverageRatio?: number) => {
+  // `resolution` is '720p' | '1080p' and must match the quote the user saw.
+  approve: async (genId: string, coverageRatio?: number, resolution?: string) => {
     const response = await apiClient.post('/api/promo/animated/approve', {
       gen_id: genId,
       ...(coverageRatio === undefined ? {} : { coverage_ratio: coverageRatio }),
+      ...(resolution === undefined ? {} : { resolution }),
     })
     return response.data
   },
@@ -1797,10 +1861,11 @@ export const kidsApi = {
   // The coverage dial changes what a render costs, so the price comes from the
   // server rather than being hard-coded here -- hard-coding it is how the
   // displayed price drifted 6-13x below the real charge. Free, no side effects.
-  quote: async (genId: string, coverageRatio?: number) => {
+  quote: async (genId: string, coverageRatio?: number, resolution?: string) => {
     const response = await apiClient.post('/api/promo/animated/quote', {
       gen_id: genId,
       ...(coverageRatio === undefined ? {} : { coverage_ratio: coverageRatio }),
+      ...(resolution === undefined ? {} : { resolution }),
     })
     return response.data
   },

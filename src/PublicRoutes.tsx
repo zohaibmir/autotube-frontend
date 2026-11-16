@@ -7,6 +7,7 @@ export const PUBLIC_PAGES = [
   { path: '/about', source: 'src/pages/AboutPage.tsx', load: () => import('./pages/AboutPage') },
   { path: '/contact', source: 'src/pages/ContactPage.tsx', load: () => import('./pages/ContactPage') },
   { path: '/faq', source: 'src/pages/FAQPage.tsx', load: () => import('./pages/FAQPage') },
+  { path: '/guides/api-keys', source: 'src/pages/ApiKeyGuidesPage.tsx', load: () => import('./pages/ApiKeyGuidesPage') },
   { path: '/blog', source: 'src/pages/BlogListPage.tsx', load: () => import('./pages/BlogListPage') },
   { path: '/blog/:slug', source: 'src/pages/BlogPostPage.tsx', load: () => import('./pages/BlogPostPage') },
   { path: '/tools/seo-analyzer', source: 'src/pages/SeoAnalyzerPage.tsx', load: () => import('./pages/SeoAnalyzerPage') },

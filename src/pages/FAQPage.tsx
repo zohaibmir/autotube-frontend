@@ -4,6 +4,14 @@ import Navbar from '@components/Navbar'
 import Footer from '@components/Footer'
 import SEO from '@components/SEO'
 import { ChevronDown } from 'lucide-react'
+import {
+  FREE_REFILL,
+  OWN_KEYS_RENDER_CAP,
+  PLAN_PRICE_ANNUAL_USD,
+  PLAN_PRICE_USD,
+  UNIT_CREDITS,
+  channelCount,
+} from '@lib/creditCosts'
 
 const categories = [
   {
@@ -27,14 +35,19 @@ const categories = [
     faqs: [
       { q: 'Which platforms can I publish to?', a: "YouTube (long-form and Shorts), Instagram Reels, TikTok, Facebook Reels, Telegram channels, and Reddit (as a link post to the subreddits you choose). X (Twitter) and Pinterest are next on the roadmap." },
       { q: 'Can I schedule when my video publishes?', a: 'Yes. Every job has a "Publish at" option - pick any future date and time and the video will upload and go public automatically.' },
-      { q: 'Can I manage multiple YouTube channels?', a: 'Yes. Free and Starter: 1 channel, Pro: 5 channels, Studio: 10 channels, Agency: unlimited - each with independent settings, voices, and branding.' },
+      { q: 'Can I manage multiple YouTube channels?', a: `Yes. Free, Own Keys and Starter: ${channelCount('starter')}, Pro: ${channelCount('pro')}, Studio: ${channelCount('studio')}, Agency: ${channelCount('agency').toLowerCase()} - each with independent settings, voices, and branding.` },
     ],
   },
   {
     category: 'Billing & plans',
     faqs: [
       { q: 'Can I cancel at any time?', a: 'Yes. Cancel from billing settings in one click. You keep access until the end of your billing period. No cancellation fees.' },
-      { q: 'What happens when I run out of credits?', a: 'You can still browse and manage your content, but new renders are paused until you upgrade or buy a credit top-up. Unused paid credits roll over for one month.' },
+      { q: 'What happens when I run out of credits?', a: `You can still browse and manage your content, but new renders are paused until you upgrade or buy a credit top-up. Unused paid credits roll over for one month. Free accounts get ${FREE_REFILL.monthly} more credits every month, up to ${FREE_REFILL.cap}.` },
+      { q: 'Can I use my own API keys?', a: `Yes, on every paid plan. Connect your Claude, OpenAI, Gemini, Kling, MiniMax or ElevenLabs key in Settings. You pay that provider directly, and we only charge credits for the parts of a render that still run on our keys. Starter adds a ${UNIT_CREDITS.byokPlatformFee}-credit platform fee per run; Own Keys, Pro, Studio and Agency pay none.` },
+      { q: 'What is the Own Keys plan?', a: `A $${PLAN_PRICE_USD.own_keys}/month plan for creators who already pay for AI. Your own Claude, OpenAI or Gemini key writes the scripts and we do the rest: rendering, uploading, scheduling and posting, up to ${OWN_KEYS_RENDER_CAP} renders a month on one channel. It includes no credits, but you can buy a top-up to use our keys for a single job.` },
+      { q: 'Is animation on the free plan?', a: 'No. Animated episodes need a paid plan: Own Keys (on your own Kling or MiniMax key) or any credit plan from Starter up.' },
+      { q: 'Can I choose 720p or 1080p, or the AI model that writes my scripts?', a: 'Yes, on every paid plan. Pick 720p or 1080p per animated episode (1080p costs more credits, shown before you render), and choose Claude, OpenAI or Gemini for scripts in Settings.' },
+      { q: 'Is there yearly billing?', a: `Yes. Every paid plan can be billed yearly for the price of ten months, e.g. Pro is $${PLAN_PRICE_ANNUAL_USD.pro}/year instead of $${PLAN_PRICE_USD.pro * 12}. Credits are still granted monthly.` },
       { q: 'Do you offer refunds?', a: '14-day money-back guarantee on the first charge of any paid plan. Contact support within 14 days.' },
     ],
   },

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Sparkles, ChevronRight, Loader2, Check, X, Plus, Trash2,
+  Sparkles, ChevronRight, Loader2, Check, X, Plus, Trash2, Lock,
   ExternalLink, AlertCircle, Music2, Mic, User, Image,
   ChevronDown, ChevronUp, Wand2,
 } from 'lucide-react'
@@ -43,6 +43,9 @@ interface GenData {
 }
 
 /** Server-computed price for an animated episode (POST /animated/quote). */
+type AnimationResolution = '720p' | '1080p'
+const ANIMATION_RESOLUTIONS: AnimationResolution[] = ['720p', '1080p']
+
 interface EpisodeQuote {
   segments: number
   clips: number
@@ -58,6 +61,12 @@ interface EpisodeQuote {
   fee_credits: number
   byok_providers: string[]
   coverage_ratio: number
+  /** Clip resolution this quote is priced at. */
+  resolution: AnimationResolution
+  /** The same choice priced at each resolution, for the 720p / 1080p toggle. */
+  credits_by_resolution: Record<AnimationResolution, number>
+  /** Resolutions the user's plan may order. */
+  resolutions_allowed: AnimationResolution[]
   credits_remaining: number | null
   affordable: boolean
 }
@@ -334,6 +343,8 @@ function ReviewCard({
   creditsCost,
   coverage,
   onCoverageChange,
+  resolution,
+  onResolutionChange,
   quote,
 }: {
   genData: GenData
@@ -345,6 +356,8 @@ function ReviewCard({
   creditsCost?: number | null
   coverage: number
   onCoverageChange: (ratio: number) => void
+  resolution: AnimationResolution
+  onResolutionChange: (res: AnimationResolution) => void
   quote: EpisodeQuote | null
 }) {
   const [showSegments, setShowSegments] = useState(true)
@@ -673,10 +686,38 @@ function ReviewCard({
               </button>
             ))}
           </div>
+          <div className="grid grid-cols-2 gap-1.5">
+            {ANIMATION_RESOLUTIONS.map(res => {
+              const allowed = !quote || quote.resolutions_allowed.includes(res)
+              const price = quote?.credits_by_resolution?.[res]
+              return (
+                <button
+                  key={res}
+                  onClick={() => onResolutionChange(res)}
+                  disabled={!allowed || busyScene !== null || approving}
+                  title={allowed ? undefined : 'Not included in your plan'}
+                  className={`h-8 text-[10px] rounded border transition-colors disabled:opacity-40 ${
+                    resolution === res
+                      ? 'border-[#0A0A0A] bg-[#0A0A0A] text-white'
+                      : 'border-[#E5E5E5] text-[#525252] hover:border-[#D4D4D4]'
+                  }`}
+                >
+                  {res}{price != null ? ` · ${price} credits` : ''}
+                </button>
+              )
+            })}
+          </div>
           <p className="text-[10px] text-[#A3A3A3]">
-            You pay for the scenes you animate. A scene without its own clip holds the
+            You pay for the scenes you animate. 1080p clips cost more to generate than 720p. A scene without its own clip holds the
             previous one, so the video still spans the full runtime.
-            {quote && quote.byok_credits < quote.credits && (
+            {quote && quote.byok_providers.length > 0 && (
+              <> Runs on your own {quote.byok_providers.join(', ')} key
+                {quote.byok_providers.length > 1 ? 's' : ''}; the{' '}
+                <strong className="text-[#525252]">{quote.credits} credits</strong> cover what still runs on ours
+                {quote.fee_credits > 0 ? `, including a ${quote.fee_credits}-credit platform fee` : ''}
+                {' '}(all-hosted: {quote.platform_credits}).</>
+            )}
+            {quote && quote.byok_providers.length === 0 && quote.byok_credits < quote.credits && (
               <> With your own Kling key this episode costs{' '}
                 <strong className="text-[#525252]">{quote.byok_credits} credits</strong>{' '}
                 instead of {quote.credits}.</>
@@ -1222,17 +1263,18 @@ export default function KidsPage() {
   // from what the customer actually pays -- the old flat `anime_episode` recipe
   // was 6-13x below the real charge.
   const [coverage, setCoverage] = useState(DEFAULT_COVERAGE)
+  const [resolution, setResolution] = useState<AnimationResolution>('720p')
   const [quote, setQuote] = useState<EpisodeQuote | null>(null)
   const episodeCost = quote?.credits ?? null
 
   useEffect(() => {
     if (phase !== 'review' || !genId) return
     let cancelled = false
-    kidsApi.quote(genId, coverage)
+    kidsApi.quote(genId, coverage, resolution)
       .then((q: EpisodeQuote) => { if (!cancelled) setQuote(q) })
       .catch(() => { if (!cancelled) setQuote(null) })
     return () => { cancelled = true }
-  }, [phase, genId, coverage])
+  }, [phase, genId, coverage, resolution])
 
   const { data: charData, refetch: refetchChars } = useQuery({
     queryKey: ['character-profiles', charChannel],
@@ -1299,7 +1341,7 @@ export default function KidsPage() {
     if (!genId) return
     setApproving(true)
     try {
-      await kidsApi.approve(genId, coverageRatio)
+      await kidsApi.approve(genId, coverageRatio, resolution)
       setPhase('media_loading')
       // W8: the episode charge happens in the worker; refresh the sidebar chip.
       qc.invalidateQueries({ queryKey: ['billing-usage'] })
@@ -1308,7 +1350,7 @@ export default function KidsPage() {
     } finally {
       setApproving(false)
     }
-  }, [genId, qc])
+  }, [genId, qc, resolution])
 
   const handlePublish = useCallback(async (form: PublishValues) => {
     if (!genId) return
@@ -1460,6 +1502,16 @@ export default function KidsPage() {
         </div>
       </div>
 
+      {usageData?.plan === 'free' && (
+        <div className="flex-shrink-0 flex items-center justify-between gap-3 px-5 py-2.5 bg-[#FFFBEB] border-b border-[#FDE68A] text-[12px] text-[#B45309]">
+          <span className="flex items-center gap-2">
+            <Lock size={12} strokeWidth={1.5} />
+            Animated episodes are not included in the Free plan. Upgrade to Own Keys (with your own Kling or MiniMax key) or any credit plan.
+          </span>
+          <Link to="/app/billing" className="font-medium underline hover:opacity-80 whitespace-nowrap">See plans</Link>
+        </div>
+      )}
+
       {/* ── Content ─────────────────────────────────────────────────────── */}
       {tab === 'video' ? (
         <div className="flex-1 overflow-auto p-5">
@@ -1497,6 +1549,8 @@ export default function KidsPage() {
                   creditsCost={episodeCost}
                   coverage={coverage}
                   onCoverageChange={setCoverage}
+                  resolution={resolution}
+                  onResolutionChange={setResolution}
                   quote={quote}
                 />
               )}

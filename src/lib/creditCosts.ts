@@ -16,12 +16,41 @@
 
 /** `core/metering.PLAN_CREDITS`. `null` means unmetered. */
 export const PLAN_CREDITS: Record<string, number | null> = {
-  free: 40, // one-time, no rollover
+  free: 40, // starting balance; refilled monthly (FREE_REFILL)
+  own_keys: 0, // runs on the user's own API keys; only top-up credits spend
   starter: 300,
   pro: 900,
   studio: 2200,
   agency: 8000,
   enterprise: null,
+}
+
+/** `core/pricing.PLAN_PRICE_USD` -- monthly list price. */
+export const PLAN_PRICE_USD: Record<string, number> = {
+  free: 0,
+  own_keys: 10,
+  starter: 19,
+  pro: 49,
+  studio: 99,
+  agency: 299,
+}
+
+/** `core/pricing.OWN_KEYS_MONTHLY_RENDER_CAP` -- fair-use renders a month on Own Keys. */
+export const OWN_KEYS_RENDER_CAP = 40
+
+/** `core/pricing.FREE_MONTHLY_REFILL` / `FREE_CREDIT_CAP`: Free gets +refill a month, up to cap. */
+export const FREE_REFILL = {
+  monthly: 10,
+  cap: 40,
+}
+
+/** `core/pricing.PLAN_PRICE_ANNUAL_USD` -- yearly price; credits are still granted monthly. */
+export const PLAN_PRICE_ANNUAL_USD: Record<string, number> = {
+  own_keys: 96,
+  starter: 190,
+  pro: 490,
+  studio: 990,
+  agency: 2990,
 }
 
 /**
@@ -37,6 +66,7 @@ export const PLAN_CREDITS: Record<string, number | null> = {
  */
 export const PLAN_CHANNELS: Record<string, number | null> = {
   free: 1,
+  own_keys: 1,
   starter: 1,
   pro: 5,
   studio: 10,
@@ -91,9 +121,9 @@ export const ANIMATED_EPISODE = {
   segments: 24,
   defaultCoverage: 0.3,
   /** `episode_quote(24)` -- the recommended ~30% coverage. */
-  defaultCredits: 159,
+  defaultCredits: 110,
   /** `episode_quote(24, 1.0)` -- every scene animated. */
-  fullCredits: 345,
+  fullCredits: 296,
 } as const
 
 /** How many of a unit a plan's monthly allowance buys. */

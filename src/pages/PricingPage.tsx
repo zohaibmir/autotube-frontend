@@ -1,10 +1,22 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import Navbar from '@components/Navbar'
 import Footer from '@components/Footer'
 import SEO from '@components/SEO'
 import { ArrowRight, Check, Minus } from 'lucide-react'
 import { SUPPORT_EMAIL } from '@lib/site'
-import { ANIMATED_EPISODE, PLAN_CREDITS, UNIT_CREDITS, channelCount, channelPhrase, perMonth } from '@lib/creditCosts'
+import {
+  ANIMATED_EPISODE,
+  FREE_REFILL,
+  OWN_KEYS_RENDER_CAP,
+  PLAN_CREDITS,
+  PLAN_PRICE_ANNUAL_USD,
+  PLAN_PRICE_USD,
+  UNIT_CREDITS,
+  channelCount,
+  channelPhrase,
+  perMonth,
+} from '@lib/creditCosts'
 
 // Packages from docs/PACKAGING_AND_ANIMATION_STUDIO_PLAN.md §5.3. Prices must
 // match core/pricing.PLAN_PRICE_USD and core/metering.PLAN_CREDITS -- those are
@@ -17,21 +29,52 @@ import { ANIMATED_EPISODE, PLAN_CREDITS, UNIT_CREDITS, channelCount, channelPhra
 // 2200 -> "2,200". `null` (unmetered) renders as "Unlimited".
 const _fmt = (n: number | null) => (n == null ? 'Unlimited' : n.toLocaleString('en-US'))
 
-const plans = [
+type Plan = {
+  id: string
+  name: string
+  creditsLine: string
+  description: string
+  cta: string
+  ctaTo: string
+  highlight: boolean
+  badge?: string
+  features: string[]
+  limits?: string[]
+}
+
+const plans: Plan[] = [
   {
-    name: 'Free', price: 0, credits: _fmt(PLAN_CREDITS.free), creditsNote: 'one-time',
-    description: 'Make your first video free. No card required.',
+    id: 'free', name: 'Free',
+    creditsLine: `${PLAN_CREDITS.free} credits to start, +${FREE_REFILL.monthly} / month`,
+    description: 'Make your first videos free. No card required.',
     cta: 'Start free', ctaTo: '/signup', highlight: false,
     features: [
-      `${PLAN_CREDITS.free} credits to start (one-time)`,
+      `${PLAN_CREDITS.free} credits to start, +${FREE_REFILL.monthly} every month (up to ${FREE_REFILL.cap})`,
       channelPhrase('free', 'YouTube channel'),
       'AI scripts, titles, descriptions & tags',
       'Standard voiceovers (no key needed)',
       'Stock footage, auto upload to YouTube',
     ],
+    limits: ['No animated episodes', 'No own API keys'],
   },
   {
-    name: 'Starter', price: 19, credits: _fmt(PLAN_CREDITS.starter), creditsNote: '/ month',
+    id: 'own_keys', name: 'Own Keys',
+    creditsLine: `${OWN_KEYS_RENDER_CAP} renders / month on your keys`,
+    description: 'Bring your AI. We run the factory.',
+    cta: 'Start Own Keys', ctaTo: '/signup', highlight: false,
+    features: [
+      'Your own Claude, OpenAI or Gemini key writes the scripts',
+      `${OWN_KEYS_RENDER_CAP} renders / month`,
+      channelPhrase('own_keys', 'YouTube channel'),
+      'Animated episodes on your own Kling or MiniMax key',
+      'Scheduler, analytics & social auto-post',
+      'No platform fee on your own keys',
+      'Top up credits to use our keys for a single job',
+    ],
+  },
+  {
+    id: 'starter', name: 'Starter',
+    creditsLine: `${_fmt(PLAN_CREDITS.starter)} credits / month`,
     description: 'For creators publishing regularly.',
     cta: 'Start Starter', ctaTo: '/signup', highlight: false,
     features: [
@@ -39,26 +82,30 @@ const plans = [
       channelPhrase('starter', 'YouTube channel'),
       'Everything in Free',
       'Premium AI voiceovers (ElevenLabs)',
+      'Animated episodes (credit-limited)',
       'Vertical Shorts from one script',
       'Unused credits roll over one month',
     ],
   },
   {
-    name: 'Pro', price: 49, credits: _fmt(PLAN_CREDITS.pro), creditsNote: '/ month', badge: 'Most popular',
+    id: 'pro', name: 'Pro',
+    creditsLine: `${_fmt(PLAN_CREDITS.pro)} credits / month`, badge: 'Most popular',
     description: 'For creators scaling across channels.',
     cta: 'Start Pro', ctaTo: '/signup', highlight: true,
     features: [
       `${_fmt(PLAN_CREDITS.pro)} credits / month`,
       channelPhrase('pro', 'YouTube channel'),
       'Everything in Starter',
-      'Animated kids episodes (Kling)',
+      `~${perMonth('pro', ANIMATED_EPISODE.defaultCredits)} animated episodes / month`,
+      'No platform fee on your own keys',
       'Scheduler, queue & content calendar',
       'Analytics + auto-post to IG, FB, TikTok, Telegram & Reddit',
       'Email support',
     ],
   },
   {
-    name: 'Studio', price: 99, credits: _fmt(PLAN_CREDITS.studio), creditsNote: '/ month',
+    id: 'studio', name: 'Studio',
+    creditsLine: `${_fmt(PLAN_CREDITS.studio)} credits / month`,
     description: 'For animation-led channels.',
     cta: 'Start Studio', ctaTo: '/signup', highlight: false,
     features: [
@@ -71,7 +118,8 @@ const plans = [
     ],
   },
   {
-    name: 'Agency', price: 299, credits: _fmt(PLAN_CREDITS.agency), creditsNote: '/ month',
+    id: 'agency', name: 'Agency',
+    creditsLine: `${_fmt(PLAN_CREDITS.agency)} credits / month`,
     description: 'For agencies running multiple brands.',
     cta: 'Contact sales', ctaTo: '/contact', highlight: false,
     features: [
@@ -83,23 +131,35 @@ const plans = [
   },
 ]
 
-// Entitlements, not a feature matrix. Credits are the real currency, so gating
-// features per tier would be fiction -- what differs between packages is how many
-// credits you get and how many channels you can attach to them.
-const entitlements = [
+// $96 -> "96", $82.5 -> "82.50": whole dollars stay whole, cents always show two digits.
+const _usd = (n: number) =>
+  n.toLocaleString('en-US', Number.isInteger(n) ? {} : { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+// What the server enforces per plan (PRICING_STRATEGY.md §5.3, core/pricing.PLAN_FEATURES).
+// Credits are still the main currency; these rows are the few things credits cannot express.
+type EntRow = { feature: string } & Record<string, string | boolean>
+const entitlements: EntRow[] = [
   {
-    feature: 'Monthly credits',
-    free: `${PLAN_CREDITS.free} one-time`,
+    feature: 'Hosted credits / month',
+    free: `+${FREE_REFILL.monthly} (${PLAN_CREDITS.free} to start)`,
+    own_keys: 'Top-ups only',
     starter: _fmt(PLAN_CREDITS.starter),
     pro: _fmt(PLAN_CREDITS.pro),
     studio: _fmt(PLAN_CREDITS.studio),
     agency: _fmt(PLAN_CREDITS.agency),
   },
-  { feature: 'YouTube channels', free: channelCount('free'), starter: channelCount('starter'), pro: channelCount('pro'), studio: channelCount('studio'), agency: channelCount('agency') },
-  { feature: 'Unused credits roll over', free: false, starter: '1 month', pro: '1 month', studio: '1 month', agency: '1 month' },
-  { feature: 'Bring your own API keys (BYOK)', free: true, starter: true, pro: true, studio: true, agency: true },
-  { feature: 'Credit top-ups available', free: true, starter: true, pro: true, studio: true, agency: true },
-  { feature: 'Support', free: 'Community', starter: 'Email', pro: 'Email', studio: 'Priority', agency: 'Priority + onboarding' },
+  { feature: 'YouTube channels', free: channelCount('free'), own_keys: channelCount('own_keys'), starter: channelCount('starter'), pro: channelCount('pro'), studio: channelCount('studio'), agency: channelCount('agency') },
+  { feature: 'Renders / month', free: 'Credit-bound', own_keys: String(OWN_KEYS_RENDER_CAP), starter: 'Credit-bound', pro: 'Credit-bound', studio: 'Credit-bound', agency: 'Credit-bound' },
+  { feature: 'Animated episodes', free: false, own_keys: 'On your key', starter: true, pro: true, studio: true, agency: true },
+  { feature: '720p or 1080p animation', free: false, own_keys: true, starter: true, pro: true, studio: true, agency: true },
+  { feature: 'Premium AI voice (hosted)', free: false, own_keys: 'Via top-up', starter: true, pro: true, studio: true, agency: true },
+  { feature: 'Choose the script model (Claude, OpenAI, Gemini)', free: false, own_keys: true, starter: true, pro: true, studio: true, agency: true },
+  { feature: 'Bring your own API keys', free: false, own_keys: 'Required', starter: true, pro: true, studio: true, agency: true },
+  { feature: 'Platform fee on own-key runs', free: false, own_keys: 'None', starter: `${UNIT_CREDITS.byokPlatformFee} credits`, pro: 'None', studio: 'None', agency: 'None' },
+  { feature: 'Credit top-ups available', free: true, own_keys: true, starter: true, pro: true, studio: true, agency: true },
+  { feature: 'Unused credits roll over', free: false, own_keys: false, starter: '1 month', pro: '1 month', studio: '1 month', agency: '1 month' },
+  { feature: 'Yearly billing (2 months free)', free: false, own_keys: true, starter: true, pro: true, studio: true, agency: true },
+  { feature: 'Support', free: 'Community', own_keys: 'Email', starter: 'Email', pro: 'Email', studio: 'Priority', agency: 'Priority + onboarding' },
 ]
 
 // What a credit actually buys. Every number comes from @lib/creditCosts, which
@@ -143,19 +203,20 @@ const recipes = [
   },
 ]
 
-function Cell({ val }: { val: string | boolean }) {
+function Cell({ val }: { val: string | boolean | undefined }) {
   if (val === true) return <Check size={16} className="text-green-500 mx-auto" />
   if (val === false) return <Minus size={16} className="text-gray-500 mx-auto" />
   return <span className="text-sm text-gray-600">{val}</span>
 }
 
 export default function PricingPage() {
+  const [yearly, setYearly] = useState(false)
   return (
     <div className="min-h-screen bg-white flex flex-col">
       <Navbar />
       <SEO
         title="Pricing"
-        description={`Credit-based pricing for AI YouTube automation. Start free with ${PLAN_CREDITS.free} credits, then scale from $19/mo. A Short costs ${UNIT_CREDITS.shortStock} credits, a long-form video ${UNIT_CREDITS.longformStock}, and an animated episode is priced by how many scenes you animate (~${ANIMATED_EPISODE.defaultCredits} for ${ANIMATED_EPISODE.minutes} minutes). Bring your own Kling or ElevenLabs key and animated episodes drop to ${UNIT_CREDITS.byokPlatformFee}.`}
+        description={`Credit-based pricing for AI YouTube automation. Start free with ${PLAN_CREDITS.free} credits plus ${FREE_REFILL.monthly} every month, bring your own AI keys for $${PLAN_PRICE_USD.own_keys}/mo, or get hosted credits from $${PLAN_PRICE_USD.starter}/mo. A Short costs ${UNIT_CREDITS.shortStock} credits, a long-form video ${UNIT_CREDITS.longformStock}, and an animated episode ~${ANIMATED_EPISODE.defaultCredits} for ${ANIMATED_EPISODE.minutes} minutes. Pay yearly and get two months free.`}
         path="/pricing"
       />
 
@@ -183,14 +244,13 @@ export default function PricingPage() {
             roll over for a month.
           </p>
           <p className="text-gray-500" style={{ fontSize: 13.5, lineHeight: 1.7, marginTop: 16 }}>
-            Month-to-month. Cancel any time. Already have a Kling or ElevenLabs account?{' '}
+            Month-to-month, or pay yearly and get two months free. Cancel any time. Already pay
+            for Claude, OpenAI, Gemini, Kling or ElevenLabs?{' '}
             <Link to="/app/settings" className="font-semibold text-sky-700 hover:underline">
               Connect your own key
             </Link>{' '}
-            {/* Derived, not typed. This read "drop to a 2-credit platform fee" as a
-                literal while the meta description above already derived the same
-                figure -- so the visible price could drift from the charged one. */}
-            and animated episodes drop to a {UNIT_CREDITS.byokPlatformFee}-credit platform fee.
+            and you are only charged for the parts of a render that run on ours. Or skip credits
+            entirely with the ${PLAN_PRICE_USD.own_keys} Own Keys plan.
           </p>
         </div>
       </section>
@@ -202,8 +262,26 @@ export default function PricingPage() {
             episodes (Kling)" broke to one word per line. `max-w-7xl` plus tighter
             card padding buys back ~45px of text width per card. */}
         <div className="mx-auto" style={{ maxWidth: 1280, padding: '56px 24px 40px' }}>
-          <div className="max-w-7xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5" style={{ gap: 16 }}>
+          <div className="max-w-7xl mx-auto flex justify-center" style={{ marginBottom: 28 }}>
+            <div className="inline-flex rounded-lg border border-gray-200 p-1" role="group" aria-label="Billing interval">
+              {[false, true].map((y) => (
+                <button
+                  key={String(y)}
+                  type="button"
+                  onClick={() => setYearly(y)}
+                  aria-pressed={yearly === y}
+                  className={`rounded-md px-4 py-1.5 text-sm font-semibold transition-colors ${yearly === y ? 'bg-navy-600 text-white' : 'text-gray-600 hover:text-navy-600'}`}
+                >
+                  {y ? 'Yearly · 2 months free' : 'Monthly'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="max-w-7xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3" style={{ gap: 16 }}>
             {plans.map((plan) => {
+              const monthly = PLAN_PRICE_USD[plan.id] ?? 0
+              const annual = yearly ? PLAN_PRICE_ANNUAL_USD[plan.id] : undefined
+              const shown = annual ? annual / 12 : monthly
               return (
                 <div
                   key={plan.name}
@@ -223,15 +301,20 @@ export default function PricingPage() {
                     className="font-bold text-navy-600"
                     style={{ fontSize: 29, lineHeight: 1.1, letterSpacing: '-0.02em', marginBottom: 6 }}
                   >
-                    {plan.price === null ? 'Custom' : plan.price === 0 ? 'Free' : `$${plan.price}`}
-                    {plan.price !== null && plan.price > 0 && (
+                    {monthly === 0 ? 'Free' : `$${_usd(shown)}`}
+                    {monthly > 0 && (
                       <span className="font-normal text-gray-500" style={{ fontSize: 15 }}>/mo</span>
                     )}
                   </p>
+                  {annual ? (
+                    <p className="text-gray-500" style={{ fontSize: 12, marginBottom: 6 }}>
+                      ${_usd(annual)} billed yearly
+                    </p>
+                  ) : null}
                   {/* sky-700 rather than sky-600: this is 13px text, and sky-600 on
                       white measures about 3.4:1 -- under the 4.5:1 body-text floor. */}
                   <p className="font-semibold text-sky-700" style={{ fontSize: 13, marginBottom: 6 }}>
-                    {plan.credits} <span className="font-normal text-gray-500">credits {plan.creditsNote}</span>
+                    {plan.creditsLine}
                   </p>
                   <p className="text-gray-500" style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 20 }}>
                     {plan.description}
@@ -244,6 +327,15 @@ export default function PricingPage() {
                         style={{ gap: 8, fontSize: 12.5, lineHeight: 1.5 }}
                       >
                         <Check size={13} className="text-green-500 flex-shrink-0" style={{ marginTop: 2 }} /> {f}
+                      </li>
+                    ))}
+                    {plan.limits?.map((f) => (
+                      <li
+                        key={f}
+                        className="flex items-start text-gray-500"
+                        style={{ gap: 8, fontSize: 12.5, lineHeight: 1.5 }}
+                      >
+                        <Minus size={13} className="text-gray-500 flex-shrink-0" style={{ marginTop: 2 }} /> {f}
                       </li>
                     ))}
                   </ul>
@@ -266,6 +358,7 @@ export default function PricingPage() {
             className="max-w-7xl mx-auto text-center text-gray-500"
             style={{ fontSize: 12.5, lineHeight: 1.65, marginTop: 20 }}
           >
+            Yearly plans are billed once a year; credits are still granted every month.
             Prices are in USD. VAT or sales tax is added at checkout where it applies, and shown
             before you pay — the amount you confirm is the total you are charged.
           </p>
@@ -288,8 +381,8 @@ export default function PricingPage() {
                 <tr className="border-b border-gray-200">
                   <th scope="col" className="text-left py-3 pr-6 text-sm font-semibold text-gray-500">Output</th>
                   <th scope="col" className="py-3 px-4 text-center text-sm font-semibold text-navy-600">Credits each</th>
-                  <th scope="col" className="py-3 px-4 text-center text-sm font-semibold text-navy-600">Free (40)</th>
-                  <th scope="col" className="py-3 px-4 text-center text-sm font-semibold text-navy-600">Pro (900)</th>
+                  <th scope="col" className="py-3 px-4 text-center text-sm font-semibold text-navy-600">Free ({PLAN_CREDITS.free})</th>
+                  <th scope="col" className="py-3 px-4 text-center text-sm font-semibold text-navy-600">Pro ({_fmt(PLAN_CREDITS.pro)})</th>
                 </tr>
               </thead>
               <tbody>
@@ -303,26 +396,19 @@ export default function PricingPage() {
                     <td className="py-3 px-4 text-center text-sm text-gray-600">~{r.pro}</td>
                   </tr>
                 ))}
-                <tr className="bg-white border-t border-gray-200">
-                  <td className="py-3 pr-6 text-sm text-gray-600">
-                    Any render, using your own Kling / ElevenLabs key
-                  </td>
-                  <td className="py-3 px-4 text-center text-sm font-semibold text-sky-600">
-                    {UNIT_CREDITS.byokPlatformFee}
-                  </td>
-                  <td className="py-3 px-4 text-center text-sm text-gray-600">
-                    ~{perMonth('free', UNIT_CREDITS.byokPlatformFee)}
-                  </td>
-                  <td className="py-3 px-4 text-center text-sm text-gray-600">
-                    ~{perMonth('pro', UNIT_CREDITS.byokPlatformFee)}
-                  </td>
-                </tr>
               </tbody>
             </table>
           </div>
           <p className="text-xs text-gray-500 mt-4">
             Counts are approximate — long-form videos cost more when the script is longer, and a
             re-render of an individual animated scene costs {UNIT_CREDITS.animeScene}.
+          </p>
+          <p className="text-sm text-gray-600 mt-3" style={{ lineHeight: 1.7 }}>
+            <strong className="text-navy-600">On your own keys</strong> you pay only for the parts of a
+            render that run on ours — for example the voice and music on an animated episode whose
+            clips come from your Kling key. Starter adds a {UNIT_CREDITS.byokPlatformFee}-credit
+            platform fee per run; Own Keys, Pro, Studio and Agency pay no fee.{' '}
+            <Link to="/guides/api-keys" className="text-sky-700 hover:underline">How to get each API key</Link>.
           </p>
         </div>
       </section>
@@ -334,7 +420,7 @@ export default function PricingPage() {
             Plan entitlements
           </h2>
           <div className="overflow-x-auto">
-            <table className="w-full">
+            <table className="w-full" style={{ minWidth: 820 }}>
               <thead>
                 <tr className="border-b border-gray-200">
                   <th scope="col" className="text-left py-3 pr-6 text-sm font-semibold text-gray-500">Feature</th>
@@ -346,12 +432,10 @@ export default function PricingPage() {
               <tbody>
                 {entitlements.map((row, i) => (
                   <tr key={row.feature} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50/60'}>
-                    <td className="py-3 pr-6 text-sm text-gray-600">{row.feature}</td>
-                    <td className="py-3 px-3 text-center"><Cell val={row.free} /></td>
-                    <td className="py-3 px-3 text-center"><Cell val={row.starter} /></td>
-                    <td className="py-3 px-3 text-center"><Cell val={row.pro} /></td>
-                    <td className="py-3 px-3 text-center"><Cell val={row.studio} /></td>
-                    <td className="py-3 px-3 text-center"><Cell val={row.agency} /></td>
+                    <td className="py-3 pr-6 text-sm text-gray-600" style={{ minWidth: 200 }}>{row.feature}</td>
+                    {plans.map((p) => (
+                      <td key={p.id} className="py-3 px-3 text-center"><Cell val={row[p.id]} /></td>
+                    ))}
                   </tr>
                 ))}
               </tbody>
@@ -373,8 +457,11 @@ export default function PricingPage() {
             {[
               { q: 'What is a credit?', a: `A credit is one unit of rendering. A vertical Short costs ${UNIT_CREDITS.shortStock}, a long-form video costs ${UNIT_CREDITS.longformStock}, a long-form video with a premium AI voice costs ${UNIT_CREDITS.longformPremium}, and an animated episode is priced by how many scenes you animate — roughly ${ANIMATED_EPISODE.defaultCredits} credits for a ${ANIMATED_EPISODE.minutes}-minute episode, up to ${ANIMATED_EPISODE.fullCredits} if you animate every scene. The exact cost is shown before you start each render, and nothing is deducted if a render fails.` },
               { q: 'What happens when I run out of credits?', a: 'Renders that you cannot afford are blocked before they start, with a message showing the cost and your balance. You can buy a top-up without changing plan, or upgrade — both take effect immediately.' },
-              { q: 'Can I use my own Kling or ElevenLabs API key?', a: `Yes, and it is worth doing if you already pay for either. Connect your key in Settings and an animated episode drops from ~${ANIMATED_EPISODE.defaultCredits} credits to a ${UNIT_CREDITS.byokPlatformFee}-credit platform fee — you keep full control of your own provider spend.` },
-              { q: 'Do unused credits roll over?', a: 'On paid plans, unused credits roll over for one month, then expire. Free credits are one-time and do not roll over.' },
+              { q: 'Can I use my own API keys?', a: `Yes, on every paid plan. Connect your Claude, OpenAI, Gemini, Kling, MiniMax or ElevenLabs key in Settings. We charge only for the parts of a render that still run on our keys — for example the voice and music on an animated episode whose clips come from your Kling key. Starter adds a ${UNIT_CREDITS.byokPlatformFee}-credit platform fee per run; Pro and above pay none.` },
+              { q: 'What is the Own Keys plan?', a: `$${PLAN_PRICE_USD.own_keys}/mo ($${_usd(PLAN_PRICE_ANNUAL_USD.own_keys / 12)}/mo yearly) for creators who already pay for AI. Your own Claude, OpenAI or Gemini key writes the scripts, and we handle rendering, uploading, scheduling and posting — up to ${OWN_KEYS_RENDER_CAP} renders a month on ${channelPhrase('own_keys')}. No credits are included, but you can buy a top-up to use our keys for a single job.` },
+              { q: 'Is animation on the Free plan?', a: 'No. Animated episodes need a paid plan — Own Keys (on your own Kling or MiniMax key) or any credit plan from Starter up. Free covers stock-footage Shorts and long-form videos.' },
+              { q: 'Do unused credits roll over?', a: `On credit plans, unused credits roll over for one month, then expire. Free accounts get ${FREE_REFILL.monthly} more credits every month, up to a balance of ${FREE_REFILL.cap}.` },
+              { q: 'Is there yearly billing?', a: 'Yes. Every paid plan can be billed yearly for the price of ten months. Your credits are still granted monthly, and unused ones roll over the same way.' },
               { q: 'Can I cancel at any time?', a: 'Yes. Cancel from your billing settings in one click. You keep access until the end of your billing period and there are no fees.' },
               { q: 'Do you offer refunds?', a: `14-day money-back guarantee on the first charge of any paid plan. Contact ${SUPPORT_EMAIL} within 14 days.` },
             ].map((item) => (
@@ -397,8 +484,8 @@ export default function PricingPage() {
             Start with the free credits.
           </h2>
           <p className="text-sky-200" style={{ fontSize: 16.5, lineHeight: 1.6, marginTop: 12 }}>
-            {_fmt(PLAN_CREDITS.free)} credits, no card required — and the exact cost is shown
-            before every render.
+            {_fmt(PLAN_CREDITS.free)} credits plus {FREE_REFILL.monthly} more every month, no card
+            required — and the exact cost is shown before every render.
           </p>
           <div className="flex flex-col sm:flex-row justify-center" style={{ gap: 12, marginTop: 26 }}>
             <Link to="/signup" className="btn-primary btn-lg btn-inverse">

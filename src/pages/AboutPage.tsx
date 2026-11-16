@@ -21,7 +21,7 @@ const values = [
 const facts = [
   { value: 'One topic', label: 'becomes a finished, publishable video' },
   { value: 'Exact cost', label: 'shown before every render — and that is what you pay' },
-  { value: 'BYOK', label: 'bring your own API keys and skip our markup' },
+  { value: 'BYOK', label: 'bring your own API keys on any paid plan, including Own Keys' },
   { value: 'Every step', label: 'visible in your dashboard — no black box' },
 ]
 

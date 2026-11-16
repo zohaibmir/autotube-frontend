@@ -3,7 +3,7 @@ import Footer from '@components/Footer'
 import SEO from '@components/SEO'
 import { SUPPORT_EMAIL } from '@lib/site'
 
-const LAST_UPDATED = '11 October 2026'
+const LAST_UPDATED = '16 November 2026'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NOTE FOR MAINTAINERS
@@ -42,9 +42,9 @@ const SECTIONS: { heading: string; body: string[] }[] = [
   {
     heading: '4. Credits, plans and billing',
     body: [
-      'Rendering is metered in credits. Every plan includes a monthly credit allowance; additional credits can be purchased as one-off top-ups. Unused credits on paid plans roll over for one month, then expire. Free credits are one-time and do not roll over.',
+      'Rendering is metered in credits. Every plan includes a monthly credit allowance; additional credits can be purchased as one-off top-ups. Unused credits on paid plans roll over for one month, then expire. Free accounts receive a starting balance and a small monthly refill, up to a fixed cap; Free credits do not roll over beyond that cap. The Own Keys plan includes no credit allowance and a monthly render limit.',
       'The credit cost of a render is shown before you start it, and that is the amount charged. A render that fails is not charged.',
-      'Paid plans are billed in advance through Stripe. We do not store your card details. You can cancel at any time from your billing settings and you keep access until the end of the period you have paid for.',
+      'Paid plans are billed in advance through Stripe, monthly or yearly. On a yearly plan the credit allowance is still granted monthly. We do not store your card details. You can cancel at any time from your billing settings and you keep access until the end of the period you have paid for.',
       'First charges on any paid plan are covered by a 14-day money-back guarantee. Contact support within 14 days.',
     ],
   },
@@ -68,7 +68,7 @@ const SECTIONS: { heading: string; body: string[] }[] = [
   {
     heading: '5. Bring your own keys (BYOK)',
     body: [
-      'You may connect your own provider API keys (for example Anthropic, ElevenLabs or Kling). When you do, you pay that provider directly under your own agreement with them, and Vidora charges only a small platform fee. We store your keys encrypted and use them solely to run renders you request. You are responsible for your provider account, its limits and its costs.',
+      'You may connect your own provider API keys (for example Anthropic, ElevenLabs or Kling). When you do, you pay that provider directly under your own agreement with them. Vidora still charges credits for any part of a render that runs on our own provider accounts (for example a hosted voice or music track), plus, on plans that carry one, a per-run platform fee. Both are shown before you start the render. We store your keys encrypted and use them solely to run renders you request. You are responsible for your provider account, its limits and its costs.',
     ],
   },
   {

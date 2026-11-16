@@ -17,6 +17,15 @@ interface DashboardLayoutProps {
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
 
+const PLAN_LABELS: Record<string, string> = {
+  free: 'Free',
+  own_keys: 'Own Keys',
+  starter: 'Starter',
+  pro: 'Pro',
+  studio: 'Studio',
+  agency: 'Agency',
+}
+
 const NAV_SECTIONS = [
   {
     label: 'Overview',
@@ -270,10 +279,12 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             <div className="px-2 pb-2">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[10px] text-[#A3A3A3] uppercase tracking-widest font-medium">
-                  {usageData.plan === 'free' ? 'Free' : 'Pro'}
+                  {PLAN_LABELS[usageData.plan] ?? usageData.plan}
                 </span>
                 <span className={`text-[10px] font-medium ${usageData.pct >= 100 ? 'text-[#DC2626]' : usageData.pct >= 80 ? 'text-[#B45309]' : 'text-[#A3A3A3]'}`}>
-                  {usageData.used}/{usageData.limit}
+                  {usageData.renders_limit != null
+                    ? `${usageData.renders_used ?? 0}/${usageData.renders_limit} renders`
+                    : `${usageData.used}/${usageData.limit}`}
                 </span>
               </div>
               <div className="h-1 bg-[#F5F5F5] rounded-full overflow-hidden">
@@ -293,7 +304,16 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               {/* W8: credit balance — the real spend limit now that credits are
                   the currency. Amber below 25% of the plan allowance, red below
                   the cost of a stock long-form. */}
-              {usageData.credits_remaining != null && (
+              {usageData.renders_limit != null ? (
+                (usageData.credits_topup ?? 0) > 0 && (
+                  <div className="flex items-center mt-1.5 pt-1.5 border-t border-[#F5F5F5]">
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-[#A3A3A3]">
+                      <Zap size={9} strokeWidth={1.5} />
+                      {usageData.credits_topup} top-up credits
+                    </span>
+                  </div>
+                )
+              ) : usageData.credits_remaining != null && (
                 <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-[#F5F5F5]">
                   <span className="flex items-center gap-1 text-[10px] font-medium text-[#A3A3A3]">
                     <Zap size={9} strokeWidth={1.5} />
@@ -380,8 +400,8 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             <div className="flex items-center gap-2">
               <AlertCircle size={14} strokeWidth={1.5} className="flex-shrink-0" />
               {usageData.pct >= 100
-                ? <span>You've used all <strong>{usageData.limit}</strong> free videos this month. <Link to="/app/billing" className="underline font-medium hover:opacity-80">Upgrade to Pro</Link> to continue generating.</span>
-                : <span>You're at <strong>{usageData.pct}%</strong> of your monthly limit ({usageData.used}/{usageData.limit} videos). <Link to="/app/billing" className="underline font-medium hover:opacity-80">Upgrade for more headroom →</Link></span>
+                ? <span>You've used all <strong>{usageData.renders_limit ?? usageData.limit}</strong> {usageData.renders_limit != null ? 'renders' : 'credits'} for this month. <Link to="/app/billing" className="underline font-medium hover:opacity-80">Upgrade or top up</Link> to continue generating.</span>
+                : <span>You're at <strong>{usageData.pct}%</strong> of your monthly limit ({usageData.renders_limit != null ? `${usageData.renders_used ?? 0}/${usageData.renders_limit} renders` : `${usageData.used}/${usageData.limit} credits`}). <Link to="/app/billing" className="underline font-medium hover:opacity-80">Upgrade for more headroom →</Link></span>
               }
             </div>
             <button

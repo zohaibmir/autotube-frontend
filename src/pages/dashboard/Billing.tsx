@@ -8,6 +8,7 @@ import {
   Zap,
   Building2,
   Rocket,
+  KeyRound,
   Loader2,
   ExternalLink,
   PartyPopper,
@@ -16,7 +17,7 @@ import {
 import { billingApi } from '@api/services'
 import { SALES_EMAIL } from '@lib/site'
 import { apiErrorMessage } from '@lib/apiError'
-import { ANIMATED_EPISODE, PLAN_CREDITS, channelLimit, channelPhrase, perMonth } from '@lib/creditCosts'
+import { ANIMATED_EPISODE, FREE_REFILL, OWN_KEYS_RENDER_CAP, PLAN_CREDITS, PLAN_PRICE_USD, UNIT_CREDITS, channelLimit, channelPhrase, perMonth } from '@lib/creditCosts'
 
 // ── Plan definitions ──────────────────────────────────────────────────────────
 
@@ -33,34 +34,43 @@ const PLANS = [
     id: 'free',
     name: 'Free',
     price: 0,
-    credits: `${PLAN_CREDITS.free} one-time`,
+    credits: `${PLAN_CREDITS.free} to start + ${FREE_REFILL.monthly}/mo`,
     channels: channelLimit('free'),
-    features: [`${PLAN_CREDITS.free} credits (one-time)`, channelPhrase('free'), 'AI scripts + SEO', 'Standard voiceovers', 'Auto upload to YouTube'],
+    features: [`${PLAN_CREDITS.free} credits to start, +${FREE_REFILL.monthly} every month (up to ${FREE_REFILL.cap})`, channelPhrase('free'), 'AI scripts + SEO', 'Standard voiceovers', 'Auto upload to YouTube', 'No animation or own keys'],
     icon: Rocket,
+  },
+  {
+    id: 'own_keys',
+    name: 'Own Keys',
+    price: PLAN_PRICE_USD.own_keys,
+    credits: `${OWN_KEYS_RENDER_CAP} renders / month`,
+    channels: channelLimit('own_keys'),
+    features: ['Your Claude, OpenAI or Gemini key', `${OWN_KEYS_RENDER_CAP} renders / month`, channelPhrase('own_keys'), 'Animation on your Kling / MiniMax key', 'No platform fee; top-ups for hosted jobs'],
+    icon: KeyRound,
   },
   {
     id: 'starter',
     name: 'Starter',
-    price: 19,
+    price: PLAN_PRICE_USD.starter,
     credits: `${_fmt(PLAN_CREDITS.starter)} / month`,
     channels: channelLimit('starter'),
-    features: [`${_fmt(PLAN_CREDITS.starter)} credits / month`, channelPhrase('starter'), 'Premium AI voice (ElevenLabs)', 'Vertical Shorts', 'Credits roll over 1 month'],
+    features: [`${_fmt(PLAN_CREDITS.starter)} credits / month`, channelPhrase('starter'), 'Premium AI voice (ElevenLabs)', 'Animation (credit-limited)', `Own keys: ${UNIT_CREDITS.byokPlatformFee}-credit fee per run`, 'Credits roll over 1 month'],
     icon: Rocket,
   },
   {
     id: 'pro',
     name: 'Pro',
-    price: 49,
+    price: PLAN_PRICE_USD.pro,
     credits: `${_fmt(PLAN_CREDITS.pro)} / month`,
     channels: channelLimit('pro'),
-    features: [`${_fmt(PLAN_CREDITS.pro)} credits / month`, channelPhrase('pro'), 'Animated kids episodes', 'Scheduler, queue & calendar', 'Analytics + auto-post Reels to IG, FB & TikTok'],
+    features: [`${_fmt(PLAN_CREDITS.pro)} credits / month`, channelPhrase('pro'), `~${perMonth('pro', ANIMATED_EPISODE.defaultCredits)} animated episodes`, 'Own-key runs: no platform fee', 'Scheduler, queue & calendar', 'Analytics + auto-post Reels to IG, FB & TikTok'],
     icon: Zap,
     recommended: true,
   },
   {
     id: 'studio',
     name: 'Studio',
-    price: 99,
+    price: PLAN_PRICE_USD.studio,
     credits: `${_fmt(PLAN_CREDITS.studio)} / month`,
     channels: channelLimit('studio'),
     features: [`${_fmt(PLAN_CREDITS.studio)} credits / month`, channelPhrase('studio'), `~${perMonth('studio', ANIMATED_EPISODE.defaultCredits)} animated episodes`, 'Custom Studio (own clips)', 'Character profiles'],
@@ -123,11 +133,13 @@ function PlanCard({
   isCurrent,
   isLoading,
   onUpgrade,
+  annual,
 }: {
   plan: (typeof PLANS)[number]
   isCurrent: boolean
   isLoading: boolean
   onUpgrade: () => void
+  annual?: { price_usd: number; monthly_equivalent_usd: number }
 }) {
   const Icon = plan.icon
   return (
@@ -162,11 +174,16 @@ function PlanCard({
           'Free'
         ) : (
           <>
-            ${plan.price}
+            ${annual ? annual.monthly_equivalent_usd.toFixed(Number.isInteger(annual.monthly_equivalent_usd) ? 0 : 2) : plan.price}
             <span className="text-sm font-normal text-[#A3A3A3]">/mo</span>
           </>
         )}
       </p>
+      {annual && (
+        <p className="-mt-3 mb-4 text-[11px] text-[#525252]">
+          ${annual.price_usd.toLocaleString('en-US')} billed yearly · credits granted monthly
+        </p>
+      )}
 
       <ul className="space-y-1.5 mb-5">
         {plan.features.map((f, idx) => (
@@ -222,6 +239,7 @@ export default function Billing() {
   const [portalLoading, setPortalLoading] = useState(false)
   const [loadingTopup, setLoadingTopup] = useState<string | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [billingInterval, setBillingInterval] = useState<'month' | 'year'>('month')
 
   // Parse Stripe redirect query params
   const params = new URLSearchParams(window.location.search)
@@ -266,6 +284,15 @@ export default function Billing() {
   })
   const topupPackages = topupData?.packages ?? []
 
+  // Which plans Stripe sells yearly. Empty until annual price IDs are configured, so the toggle stays hidden.
+  const { data: planData } = useQuery({
+    queryKey: ['billing-plan'],
+    queryFn: () => billingApi.plan(),
+    staleTime: 60_000,
+  })
+  const annualPlans = planData?.annual_plans ?? {}
+  const hasAnnual = Object.keys(annualPlans).length > 0
+
   const currentPlan = PLANS.find((p) => p.id === planId) ?? PLANS[0]
 
   async function handleUpgrade(targetPlanId: string) {
@@ -276,7 +303,8 @@ export default function Billing() {
     setLoadingPlan(targetPlanId)
     setErrorMsg(null)
     try {
-      const { checkout_url } = await billingApi.checkout(targetPlanId)
+      const yearly = billingInterval === 'year' && targetPlanId in annualPlans
+      const { checkout_url } = await billingApi.checkout(targetPlanId, yearly ? 'year' : 'month')
       window.location.href = checkout_url
     } catch (err: any) {
       setErrorMsg(apiErrorMessage(err, 'Could not start checkout. Try again.'))
@@ -441,7 +469,14 @@ export default function Billing() {
                       older "Videos generated" bar was driven by
                       videos_used_this_month, which nothing increments any more,
                       so it always read 0. */}
-                  {creditsRemaining != null ? (
+                  {creditsUsage?.renders_limit != null && (
+                    <UsageBar
+                      label="Renders this month"
+                      used={creditsUsage.renders_used ?? 0}
+                      limit={creditsUsage.renders_limit}
+                    />
+                  )}
+                  {creditsUsage?.renders_limit != null ? null : creditsRemaining != null ? (
                     <UsageBar
                       label={`Credits used (${planCredits ?? 0}/period)`}
                       used={creditsUsed ?? 0}
@@ -577,7 +612,23 @@ export default function Billing() {
 
           {/* ── RIGHT: Plan cards ── */}
           <div className="space-y-4">
-            <p className="text-[11px] font-medium tracking-widest text-[#A3A3A3] uppercase">Plans</p>
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-medium tracking-widest text-[#A3A3A3] uppercase">Plans</p>
+              {hasAnnual && (
+                <div className="flex rounded-md border border-[#E5E5E5] p-0.5 text-[11px]" role="group" aria-label="Billing interval">
+                  {(['month', 'year'] as const).map((iv) => (
+                    <button
+                      key={iv}
+                      onClick={() => setBillingInterval(iv)}
+                      aria-pressed={billingInterval === iv}
+                      className={`px-2.5 py-1 rounded ${billingInterval === iv ? 'bg-[#0A0A0A] text-white' : 'text-[#525252] hover:text-[#0A0A0A]'}`}
+                    >
+                      {iv === 'month' ? 'Monthly' : 'Yearly · 2 months free'}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             {PLANS.map((plan) => (
               <PlanCard
                 key={plan.id}
@@ -585,6 +636,7 @@ export default function Billing() {
                 isCurrent={plan.id === planId}
                 isLoading={loadingPlan === plan.id}
                 onUpgrade={() => handleUpgrade(plan.id)}
+                annual={billingInterval === 'year' ? annualPlans[plan.id] : undefined}
               />
             ))}
 

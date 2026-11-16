@@ -5,10 +5,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useByokStatus, useByokSave, useByokRemove, useChannels } from '@hooks/useJobs'
 import { useToast } from '@components/Toast'
 import { useAuthStore } from '@store/auth'
-import { socialApi, schedulerApi, automationApi, voiceApi, notificationsApi, accountApi, billingApi, type VoiceEntry, type VoiceGroup, type NotificationPrefs } from '@api/services'
+import { byokApi, publicApi, socialApi, schedulerApi, automationApi, voiceApi, notificationsApi, accountApi, billingApi, settingsApi, type ScriptModelChoice, type VoiceEntry, type VoiceGroup, type NotificationPrefs } from '@api/services'
 import apiClient from '@api/client'
 import { apiErrorMessage } from '@lib/apiError'
 import { pingExtension, linkExtension, linkFailureMessage } from '@lib/extension'
+import { API_KEY_GUIDES, STAGE_LABELS, formatProviderCost, hostedStages, type ProviderCost } from '@content/apiKeyGuides'
+import { UNIT_CREDITS } from '@lib/creditCosts'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -58,91 +60,40 @@ const TIMEZONES: string[] = (() => {
 
 // ─── BYOK service definitions ─────────────────────────────────────────────────
 
-const SERVICES: Array<{
-  id: string
-  name: string
-  description: string
-  docUrl: string
-  placeholder: string
-}> = [
-  {
-    id: 'anthropic',
-    name: 'Anthropic',
-    description: 'Script writing, SEO, AI insights',
-    docUrl: 'https://console.anthropic.com/account/keys',
-    placeholder: 'sk-ant-api03-...',
-  },
-  {
-    id: 'elevenlabs',
-    name: 'ElevenLabs',
-    description: 'Premium AI voice narration',
-    docUrl: 'https://elevenlabs.io/app/speech-synthesis/api',
-    placeholder: 'el_...',
-  },
-  {
-    id: 'pexels',
-    name: 'Pexels',
-    description: 'Stock footage and images',
-    docUrl: 'https://www.pexels.com/api/new/',
-    placeholder: 'Your Pexels API key',
-  },
-  {
-    id: 'openai',
-    name: 'OpenAI',
-    description: 'AI image generation (gpt-image-1)',
-    docUrl: 'https://platform.openai.com/api-keys',
-    placeholder: 'sk-...',
-  },
-  {
-    id: 'replicate',
-    name: 'Replicate',
-    description: 'AI image generation (Flux / SDXL)',
-    docUrl: 'https://replicate.com/account/api-tokens',
-    placeholder: 'r8_...',
-  },
-  {
-    id: 'suno',
-    name: 'Suno',
-    description: 'AI music generation',
-    docUrl: 'https://suno.com/account',
-    placeholder: 'Your Suno API key',
-  },
-  {
-    id: 'mureka',
-    name: 'Mureka',
-    description: 'AI music generation (alternative)',
-    docUrl: 'https://mureka.ai/dashboard',
-    placeholder: 'Your Mureka API key',
-  },
-  {
-    id: 'kling',
-    name: 'Kling AI',
-    description: 'AI video generation for animated content',
-    docUrl: 'https://klingai.com/dev/docs',
-    placeholder: 'Your Kling API key',
-  },
-  {
-    id: 'minimax',
-    name: 'Minimax',
-    description: 'AI video generation (alternative)',
-    docUrl: 'https://www.minimaxi.com/en/document/guide',
-    placeholder: 'Your Minimax API key',
-  },
-]
+// Guide content (steps, caveats, console links) is shared with /guides/api-keys.
+const SERVICES = API_KEY_GUIDES.map(g => ({ ...g, docUrl: g.consoleUrl }))
 
 // ─── API Keys Tab ─────────────────────────────────────────────────────────────
 
 function ServiceRow({
   service,
   isSet,
+  cost,
   onSave,
   onRemove,
 }: {
   service: typeof SERVICES[0]
   isSet: boolean
+  cost?: ProviderCost
   onSave: (key: string) => Promise<void>
   onRemove: () => Promise<void>
 }) {
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ ok: boolean | null; message: string } | null>(null)
+  const costLine = formatProviderCost(cost)
+
+  const handleTest = async () => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      setTestResult(await byokApi.test(service.id))
+    } catch (err) {
+      setTestResult({ ok: null, message: apiErrorMessage(err, 'Could not test the key') })
+    } finally {
+      setTesting(false)
+    }
+  }
+
   const [expanded, setExpanded] = useState(false)
   const [value, setValue]       = useState('')
   const [show, setShow]         = useState(false)
@@ -221,6 +172,15 @@ function ServiceRow({
             </button>
             {isSet && (
               <button
+                onClick={handleTest}
+                disabled={testing}
+                className="h-8 px-2.5 text-[12px] font-medium text-[#525252] border border-[#E5E5E5] bg-white rounded hover:border-[#D4D4D4] transition-colors disabled:opacity-40"
+              >
+                {testing ? <Loader2 size={11} strokeWidth={1.5} className="animate-spin" /> : 'Test key'}
+              </button>
+            )}
+            {isSet && (
+              <button
                 onClick={handleRemove}
                 disabled={removing}
                 className="h-8 px-2.5 text-[12px] font-medium text-[#DC2626] border border-[#FECACA] rounded hover:bg-[#FEF2F2] transition-colors disabled:opacity-40"
@@ -238,14 +198,27 @@ function ServiceRow({
               <ExternalLink size={12} strokeWidth={1.5} />
             </a>
           </div>
-          {!isSet && (
-            <p className="text-[11px] text-[#A3A3A3] mt-2">
-              Get your key at{' '}
-              <a href={service.docUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-[#525252]">
-                {service.docUrl.replace('https://', '').split('/')[0]}
-              </a>
+          {testResult && (
+            <p className={`text-[11px] mt-2 ${testResult.ok === true ? 'text-[#16A34A]' : testResult.ok === false ? 'text-[#DC2626]' : 'text-[#B45309]'}`}>
+              {testResult.message}
             </p>
           )}
+          {costLine && <p className="text-[11px] text-[#525252] mt-2">{costLine}, billed by {service.name} to you.</p>}
+          {!isSet && (
+            <ol className="text-[11px] text-[#525252] mt-2 space-y-0.5 list-decimal pl-4">
+              {service.steps.map(step => <li key={step}>{step}</li>)}
+            </ol>
+          )}
+          {service.caveats.map(c => (
+            <p key={c} className="text-[11px] text-[#A3A3A3] mt-1">Note: {c}</p>
+          ))}
+          <p className="text-[11px] text-[#A3A3A3] mt-2">
+            Open the{' '}
+            <a href={service.docUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-[#525252]">
+              {service.docUrl.replace('https://', '').split('/')[0]} console
+            </a>
+            {' '}· <Link to="/guides/api-keys" className="underline hover:text-[#525252]">full guide</Link>
+          </p>
         </div>
       )}
     </div>
@@ -263,6 +236,20 @@ function APIKeysTab() {
   // previously included in this count and could make it appear that all
   // services were connected even when one (e.g. Mureka) was actually "Not set".
   const connectedCount = SERVICES.filter((s) => (status as Record<string, boolean>)[s.id]).length
+  const { data: costs } = useQuery({
+    queryKey: ['api-key-costs'],
+    queryFn: () => publicApi.apiKeyCosts(),
+    staleTime: 60 * 60_000,
+    retry: false,
+  })
+  const { data: usage } = useQuery({
+    queryKey: ['billing-usage'],
+    queryFn: () => billingApi.usage(),
+    staleTime: 30_000,
+    retry: false,
+  })
+  const plan = usage?.plan
+  const stillHosted = hostedStages(status as Record<string, boolean>)
 
   const handleSave = async (serviceId: string, key: string) => {
     try {
@@ -311,10 +298,25 @@ function APIKeysTab() {
               key={service.id}
               service={service}
               isSet={!!(status as Record<string, boolean>)[service.id]}
+              cost={costs?.providers?.[service.id]}
               onSave={(key) => handleSave(service.id, key)}
               onRemove={() => handleRemove(service.id)}
             />
           ))}
+        </div>
+      )}
+      {!isLoading && (
+        <div className="mt-3 px-4 py-3 border border-[#E5E5E5] rounded-lg bg-[#FAFAFA] text-[12px] text-[#525252]">
+          <span className="font-medium text-[#0A0A0A]">What you still pay us for: </span>
+          {plan === 'free'
+            ? 'Free runs on our keys only. Own keys need a paid plan, including the Own Keys plan.'
+            : <>
+                {stillHosted.length === 0
+                  ? 'nothing per provider: every paid stage runs on your keys. Stock footage and the standard voice are free.'
+                  : `${stillHosted.map(s => STAGE_LABELS[s]).join(', ')} run on our keys and are charged in credits. Stock footage and the standard voice are free.`}
+                {plan === 'starter' && ` Starter adds a ${UNIT_CREDITS.byokPlatformFee}-credit platform fee to each run on your keys.`}
+                {plan === 'own_keys' && stillHosted.length > 0 && ' On Own Keys those stages draw on top-up credits.'}
+              </>}
         </div>
       )}
     </div>
@@ -600,13 +602,121 @@ function IntegrationsTab() {
 
 // ─── Preferences Tab ──────────────────────────────────────────────────────────
 
+const PROVIDER_NAMES: Record<string, string> = { anthropic: 'Claude (Anthropic)', openai: 'OpenAI', gemini: 'Google Gemini' }
+
+function creditsDeltaText(delta: number): string {
+  if (!delta) return 'included'
+  return delta > 0 ? `+${delta} credits / episode` : `${delta} credits / episode`
+}
+
+// The account's script model (PRICING_STRATEGY.md §6.11). The server decides what actually runs -- the plan may
+// not include the choice, or the chosen provider may have no key -- and this panel shows that rather than
+// implying the selection won.
+function ScriptModelPanel() {
+  const toast = useToast()
+  const qc = useQueryClient()
+  const { data, isLoading } = useQuery({ queryKey: ['script-model'], queryFn: settingsApi.getScriptModel })
+  const save = useMutation({
+    mutationFn: (model: string) => settingsApi.putScriptModel(model),
+    onSuccess: (next) => {
+      qc.setQueryData(['script-model'], next)
+      toast.success('Script model saved')
+    },
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not save the script model')),
+  })
+
+  if (isLoading || !data) {
+    return <div className="border border-[#E5E5E5] rounded-md bg-white p-5 mb-5 text-[12px] text-[#A3A3A3]">Loading script models…</div>
+  }
+
+  const byProvider = data.choices.reduce<Record<string, ScriptModelChoice[]>>((acc, c) => {
+    (acc[c.provider] ||= []).push(c)
+    return acc
+  }, {})
+  const labelOf = (id: string) => data.choices.find((c) => c.model === id)?.label ?? id
+  const current = data.allowed ? (data.selected ?? '') : ''
+
+  return (
+    <div className="border border-[#E5E5E5] rounded-md bg-white overflow-hidden mb-5">
+      <div className="px-5 py-2.5 border-b border-[#E5E5E5] bg-[#FAFAFA] flex items-center justify-between">
+        <p className="text-[12px] font-semibold text-[#0A0A0A]">Script model</p>
+        {!data.allowed && (
+          <Link to="/pricing" className="text-[11px] font-medium text-[#1D4ED8] hover:underline">Paid plans only — upgrade</Link>
+        )}
+      </div>
+      <div className="px-5 py-4">
+        <p className="text-[12px] text-[#525252] mb-3">
+          Which AI writes your scripts. Premium models write richer scripts and cost a few more credits per
+          episode; with your own key for that provider there is no extra charge.
+        </p>
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="radio"
+            name="script-model"
+            className="mt-0.5"
+            checked={current === ''}
+            disabled={save.isPending}
+            onChange={() => save.mutate('')}
+          />
+          <span className="text-[13px] text-[#0A0A0A]">
+            System default <span className="text-[#A3A3A3]">— {labelOf(data.system_default)}, included in the plan price</span>
+          </span>
+        </label>
+        {Object.entries(byProvider).map(([provider, rows]) => (
+          <div key={provider} className="mt-2">
+            <p className="text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1">{PROVIDER_NAMES[provider] ?? provider}</p>
+            {rows.map((c) => (
+              <label key={c.model} className={`flex items-start gap-2.5 py-1.5 ${data.allowed ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>
+                <input
+                  type="radio"
+                  name="script-model"
+                  className="mt-0.5"
+                  checked={current === c.model}
+                  disabled={!data.allowed || save.isPending}
+                  onChange={() => save.mutate(c.model)}
+                />
+                <span className="text-[13px] text-[#0A0A0A]">
+                  {c.label}
+                  <span className="ml-1.5 text-[10px] uppercase tracking-wide text-[#737373] border border-[#E5E5E5] rounded px-1">{c.tier}</span>
+                  <span className="block text-[11px] text-[#737373]">
+                    {c.funded_by === 'byok'
+                      ? 'Your key — no extra credits'
+                      : c.funded_by === 'platform'
+                        ? creditsDeltaText(c.credits_delta_longform)
+                        : `Needs a ${PROVIDER_NAMES[c.provider] ?? c.provider} key in API Keys`}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+        ))}
+        {data.ignored === 'plan' && data.selected && (
+          <p className="text-[11px] text-[#B45309] mt-3">
+            Your plan uses the system default, so your saved choice ({labelOf(data.selected)}) is not applied.
+          </p>
+        )}
+        {data.fallback && (
+          <p className="text-[11px] text-[#B45309] mt-3">
+            Your choice can't run right now ({data.fallback}), so scripts use {labelOf(data.effective)}. Add the key
+            in API Keys to use it.
+          </p>
+        )}
+        {!data.fallback && !data.ignored && (
+          <p className="text-[11px] text-[#A3A3A3] mt-3">Scripts are currently written with {labelOf(data.effective)}.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function PreferencesTab() {
   // This tab's notification toggles duplicate NotificationsTab (which has real
   // API persistence). Route users there instead of silently swallowing changes.
   return (
     <div>
       <h2 className="text-[15px] font-semibold text-[#0A0A0A] mb-1">Preferences</h2>
-      <p className="text-[12px] text-[#525252] mb-5">Notification settings.</p>
+      <p className="text-[12px] text-[#525252] mb-5">AI model and notification settings.</p>
+      <ScriptModelPanel />
       <div className="flex gap-3 bg-[#EFF6FF] border border-[#BFDBFE] rounded-md p-4 mb-4">
         <div>
           <p className="text-[13px] font-semibold text-[#1D4ED8] mb-0.5">Email notifications are in the Notifications tab</p>
@@ -1391,14 +1501,16 @@ function AutomationTab() {
     ? (data.STORAGE_BACKEND_AVAILABLE as string[])
     : ['local', 'r2']
 
-  // The model choices the server's registry can actually back, each with the real model behind the label and
-  // its rate. Read from the server rather than hardcoded here: two labels may resolve to one model (this
-  // product supports two), and a hand-typed list would advertise a model the registry would refuse to price.
+  // Every model the server's registry can back (Claude, OpenAI, Gemini), keyed by model id with its rate and
+  // whether the deployment holds that provider's key. Read from the server rather than hardcoded here: a
+  // hand-typed list would advertise a model the registry would refuse to price.
   const modelChoices = Array.isArray(data?.AI_MODEL_CHOICES)
     ? (data.AI_MODEL_CHOICES as Array<{
-        choice_label: string
         label: string
         model: string
+        provider: string
+        tier: string
+        platform_key?: boolean
         input_usd_per_mtok: number | null
         output_usd_per_mtok: number | null
       }>)
@@ -1559,7 +1671,7 @@ function AutomationTab() {
           </p>
         </div>
         <div className="px-5 py-3.5 border-t border-[#F0F0F0]">
-          <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">Default AI model</label>
+          <label className="block text-[10px] font-medium text-[#A3A3A3] uppercase tracking-widest mb-1.5">System default script model</label>
           <select
             value={(values.aiModel as string) ?? ''}
             onChange={(e) => set('aiModel', e.target.value)}
@@ -1570,9 +1682,10 @@ function AutomationTab() {
                 setting nobody chose to change. */}
             <option value="">Use the environment / registry default</option>
             {modelChoices.map((c) => (
-              <option key={c.choice_label} value={c.choice_label}>
-                {c.label}
-                {c.input_usd_per_mtok != null ? ` — $${c.input_usd_per_mtok}/M in` : ''}
+              <option key={c.model} value={c.model}>
+                {c.label} ({c.tier})
+                {c.input_usd_per_mtok != null ? ` — $${c.input_usd_per_mtok}/$${c.output_usd_per_mtok} per M` : ''}
+                {c.platform_key === false ? ' — no platform key' : ''}
               </option>
             ))}
           </select>
@@ -1581,12 +1694,11 @@ function AutomationTab() {
             cost together</strong>, which is why it is a setting rather than a constant. Stored in the
             database and applied to the next generation — the quote and the meter read the same rate.
           </p>
-          {!!modelChoices.length && new Set(modelChoices.map((c) => c.model)).size < modelChoices.length && (
-            <p className="text-[11px] text-[#A3A3A3] mt-1">
-              Two labels can point at the same model — this deployment supports two models, so there is no
-              third to offer. The model behind each label is shown in the dropdown.
-            </p>
-          )}
+          <p className="text-[11px] text-[#A3A3A3] mt-1">
+            This is the model every plan's price includes and what Free accounts always use. Paid accounts can
+            pick their own in Preferences; a model marked "no platform key" needs its provider key in the
+            environment, otherwise renders fall back.
+          </p>
         </div>
       </div>
 

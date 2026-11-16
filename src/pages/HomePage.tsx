@@ -4,7 +4,7 @@ import Footer from '@components/Footer'
 import SEO, { SITE_NAME, SITE_URL } from '@components/SEO'
 import PipelinePreview from '@components/marketing/PipelinePreview'
 import { ArrowRight, CalendarClock, Check, Film, LineChart, Mic, Share2, Sparkles } from 'lucide-react'
-import { PLAN_CREDITS, channelPhrase } from '@lib/creditCosts'
+import { FREE_REFILL, OWN_KEYS_RENDER_CAP, PLAN_CREDITS, PLAN_PRICE_USD, channelPhrase } from '@lib/creditCosts'
 import { DESTINATIONS, DESTINATION_COUNT } from '@lib/destinations'
 import { publisherSchema, websiteSchema } from '@lib/structuredData'
 
@@ -31,9 +31,11 @@ const _fmt = (n: number | null) => (n == null ? 'Unlimited' : n.toLocaleString('
 // scanned PricingPage.tsx and dashboard/Billing.tsx -- so "no credit figure is
 // hardcoded in the marketing UI" was not yet true. HomePage is now in that list.
 const plans = [
-  { name: 'Free', price: '$0', period: '', vids: `${_fmt(PLAN_CREDITS.free)} credits`, channels: channelPhrase('free') },
-  { name: 'Pro', price: '$49', period: '/mo', vids: `${_fmt(PLAN_CREDITS.pro)} credits / mo`, channels: channelPhrase('pro'), highlight: true },
-  { name: 'Agency', price: 'Custom', period: '', vids: `${_fmt(PLAN_CREDITS.agency)} credits / mo`, channels: channelPhrase('agency') },
+  { name: 'Free', price: '$0', period: '', vids: `${_fmt(PLAN_CREDITS.free)} credits, +${FREE_REFILL.monthly} / mo`, channels: channelPhrase('free') },
+  { name: 'Own Keys', price: `$${PLAN_PRICE_USD.own_keys}`, period: '/mo', vids: `${OWN_KEYS_RENDER_CAP} renders / mo on your AI keys`, channels: channelPhrase('own_keys') },
+  { name: 'Pro', price: `$${PLAN_PRICE_USD.pro}`, period: '/mo', vids: `${_fmt(PLAN_CREDITS.pro)} credits / mo`, channels: channelPhrase('pro'), highlight: true },
+  // Agency is a $299 self-serve plan; it showed "Custom", which contradicted /pricing.
+  { name: 'Agency', price: `$${PLAN_PRICE_USD.agency}`, period: '/mo', vids: `${_fmt(PLAN_CREDITS.agency)} credits / mo`, channels: channelPhrase('agency') },
 ]
 
 // This section previously showed three invented testimonials -- complete with
@@ -76,7 +78,7 @@ export default function HomePage() {
             price: '0',
             priceCurrency: 'USD',
             url: `${SITE_URL}/pricing`,
-            description: `${PLAN_CREDITS.free} one-time starter credits; paid plans available.`,
+            description: `${PLAN_CREDITS.free} free credits plus ${FREE_REFILL.monthly} every month; paid plans from $${PLAN_PRICE_USD.own_keys}/mo.`,
           },
           description: 'AI-powered YouTube automation platform: script, voiceover, visuals, and multi-platform upload handled end-to-end, with retention and growth analytics.',
         }, { '@context': 'https://schema.org', ...publisherSchema() }, websiteSchema()]}
@@ -283,7 +285,7 @@ export default function HomePage() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3" style={{ gap: 18, marginBottom: 24 }}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4" style={{ gap: 18, marginBottom: 24 }}>
             {plans.map((plan) => (
               <div
                 key={plan.name}
