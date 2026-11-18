@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { jobsApi, channelsApi, queueApi, byokApi } from '@api/services'
+import { jobsApi, channelsApi, queueApi, byokApi, aiApi } from '@api/services'
 import { apiErrorMessage } from '@lib/apiError'
 import { useToast } from '@components/Toast'
 
@@ -112,12 +112,13 @@ export function useQueue(channelSlug?: string) {
 export function useQueueAdd() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ topic, channelSlug, contentType, payload }: {
+    mutationFn: ({ topic, channelSlug, contentType, payload, scheduledDate }: {
       topic: string
       channelSlug?: string
       contentType?: string
       payload?: Record<string, unknown>
-    }) => queueApi.add(topic, channelSlug, undefined, contentType, payload),
+      scheduledDate?: string
+    }) => queueApi.add(topic, channelSlug, scheduledDate, contentType, payload),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['queue'], exact: false }),
   })
 }
@@ -135,6 +136,43 @@ export function useQueueReorder() {
   return useMutation({
     mutationFn: (ids: number[]) => queueApi.reorder(ids),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['queue'], exact: false }),
+  })
+}
+
+// ── Queue history ────────────────────────────────────────────────────────────
+export function useQueueHistory(params?: { channelSlug?: string; status?: string; q?: string; limit?: number }) {
+  return useQuery({
+    queryKey: ['queue-history', params?.channelSlug ?? 'all', params?.q ?? '', params?.status ?? '', params?.limit ?? 50],
+    queryFn: () => queueApi.history(params),
+  })
+}
+
+export function useQueueHistoryRemove() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string | number) => queueApi.deleteHistory(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['queue-history'], exact: false }),
+  })
+}
+
+export function useQueueHistoryClear() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (params?: { channelSlug?: string; status?: string }) => queueApi.clearHistory(params),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['queue-history'], exact: false }),
+  })
+}
+
+// ── AI topic ideas (dedup-aware) ─────────────────────────────────────────────
+export function useTopicIdeas() {
+  return useMutation({
+    mutationFn: (params: {
+      channel_slug?: string
+      content_type?: string
+      count?: number
+      prompt?: string
+      dedupe?: boolean
+    }) => aiApi.trending(params),
   })
 }
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors,
@@ -11,7 +11,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import {
   GripVertical, Play, Trash2, Plus, X, Loader2, ListOrdered,
-  Clapperboard, Film, AlignLeft, CalendarClock,
+  Clapperboard, Film, AlignLeft, CalendarClock, Sparkles, History, Check, ListChecks,
 } from 'lucide-react'
 import { useQueue, useQueueAdd, useQueueRemove, useQueueReorder } from '@hooks/useJobs'
 import { useChannels } from '@hooks/useJobs'
@@ -19,6 +19,8 @@ import { calendarApi, schedulerApi } from '@api/services'
 import { useQueryClient } from '@tanstack/react-query'
 import { useToast } from '@components/Toast'
 import { apiErrorMessage } from '@lib/apiError'
+import AIIdeasModal from './AIIdeasModal'
+import HistoryPanel from './HistoryPanel'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -80,6 +82,10 @@ function QueueRow({
   onSchedule,
   removing,
   runningId,
+  flash,
+  selectable,
+  selected,
+  onToggleSelect,
 }: {
   item: QueueItem
   index: number
@@ -89,6 +95,10 @@ function QueueRow({
   onSchedule: (item: QueueItem) => void
   removing: number | null
   runningId: number | null
+  flash?: boolean
+  selectable?: boolean
+  selected?: boolean
+  onToggleSelect?: (id: number) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
@@ -118,12 +128,27 @@ function QueueRow({
     <div
       ref={setNodeRef}
       style={style}
+      data-flash={flash ? 'true' : 'false'}
       className={[
         'group flex items-center gap-3 px-4 h-11 border-b border-[#E5E5E5] bg-white',
         'last:border-b-0 transition-colors',
         isDragging ? 'shadow-[0_4px_12px_rgba(0,0,0,0.10)] rounded-lg' : '',
+        selected ? 'bg-[#FAFAFA]' : '',
+        flash ? 'bg-[#ECFDF5] ring-1 ring-inset ring-[#A7F3D0]' : '',
       ].join(' ')}
     >
+      {selectable && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleSelect?.(item.id) }}
+          aria-label={selected ? 'Deselect topic' : 'Select topic'}
+          className={`flex-shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+            selected ? 'bg-[#0A0A0A] border-[#0A0A0A] text-white' : 'bg-white border-[#D4D4D4] text-transparent hover:border-[#A3A3A3]'
+          }`}
+        >
+          <Check size={11} strokeWidth={2} />
+        </button>
+      )}
+
       {/* Drag handle */}
       <button
         {...attributes}
@@ -185,6 +210,7 @@ function QueueRow({
       )}
 
       {/* Actions - visible on hover */}
+      {!selectable && (
       <div className="flex-shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           onClick={() => onSchedule(item)}
@@ -214,6 +240,7 @@ function QueueRow({
           }
         </button>
       </div>
+      )}
     </div>
   )
 }
@@ -226,7 +253,7 @@ function AddTopicForm({
   onCancel,
   defaultChannelSlug,
 }: {
-  onAdd: (topic: string, channelSlug?: string, contentType?: string) => void
+  onAdd: (topic: string, channelSlug?: string, contentType?: string, scheduledDate?: string) => void
   channels: Array<{ slug: string; name?: string }>
   onCancel: () => void
   defaultChannelSlug?: string
@@ -234,11 +261,12 @@ function AddTopicForm({
   const [topic, setTopic] = useState('')
   const [channelSlug, setChannelSlug] = useState(defaultChannelSlug ?? '')
   const [contentType, setContentType] = useState<'video' | 'shorts'>('video')
+  const [scheduledDate, setScheduledDate] = useState('')
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!topic.trim()) return
-    onAdd(topic.trim(), channelSlug || undefined, contentType)
+    onAdd(topic.trim(), channelSlug || undefined, contentType, scheduledDate || undefined)
   }
 
   return (
@@ -303,6 +331,27 @@ function AddTopicForm({
         >
           <X size={14} strokeWidth={1.5} />
         </button>
+      </div>
+
+      {/* Schedule (optional) */}
+      <div className="flex items-center gap-2">
+        <CalendarClock size={12} strokeWidth={1.5} className="text-[#A3A3A3]" />
+        <input
+          type="datetime-local"
+          value={scheduledDate}
+          onChange={(e) => setScheduledDate(e.target.value)}
+          className="h-8 px-2 text-[12px] bg-white border border-[#E5E5E5] rounded focus:outline-none focus:border-[#0A0A0A]"
+        />
+        {scheduledDate && (
+          <button
+            type="button"
+            onClick={() => setScheduledDate('')}
+            className="text-[11px] text-[#A3A3A3] hover:text-[#0A0A0A] transition-colors"
+          >
+            Clear
+          </button>
+        )}
+        <span className="text-[10px] text-[#A3A3A3]">Optional — the topic stays queued and runs at this time.</span>
       </div>
     </form>
   )
@@ -469,6 +518,14 @@ export default function QueuePage() {
   const [items, setItems] = useState<QueueItem[]>([])
   const [showAddForm, setShowAddForm]   = useState(false)
   const [showBulkModal, setShowBulkModal] = useState(false)
+  const [view, setView] = useState<'queue' | 'history'>('queue')
+  const [showAiModal, setShowAiModal] = useState(false)
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [removingBulk, setRemovingBulk] = useState(false)
+  const emptyStateOpen = !isLoading && items.length === 0 && !showAddForm && view === 'queue'
+  const [flashing, setFlashing] = useState<Set<number>>(new Set())
+  const prevCountRef = useRef(0)
   const [removingId, setRemovingId]     = useState<number | null>(null)
   const [runningId, setRunningId]       = useState<number | null>(null)
   // "Add to calendar" draft: which row is open, and the datetime-local value in the user's zone.
@@ -479,6 +536,22 @@ export default function QueuePage() {
   useEffect(() => {
     setItems(rawQueue as QueueItem[])
   }, [rawQueue])
+
+  // Flash rows that were just appended so the creator sees where they landed (at the end),
+  // and scroll the last one into view.
+  useEffect(() => {
+    const prev = prevCountRef.current
+    prevCountRef.current = items.length
+    if (items.length <= prev || prev <= 0) return
+    const ids = items.slice(-(items.length - prev)).map((i) => i.id)
+    setFlashing(new Set(ids))
+    const raf = requestAnimationFrame(() => {
+      const rows = document.querySelectorAll<HTMLElement>('[data-flash="true"]')
+      rows[rows.length - 1]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    })
+    const t = setTimeout(() => setFlashing(new Set()), 1600)
+    return () => { cancelAnimationFrame(raf); clearTimeout(t) }
+  }, [items])
 
   // DnD sensors
   const sensors = useSensors(
@@ -508,17 +581,65 @@ export default function QueuePage() {
     }
   }
 
-  const handleAdd = async (topic: string, channelSlug?: string, contentType?: string) => {
+  const toggleSelectionMode = () => {
+    setSelectionMode((m) => {
+      if (m) setSelectedIds(new Set())
+      return !m
+    })
+  }
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const selectAll = () => setSelectedIds(new Set(items.map((i) => i.id)))
+
+  const handleBulkRemove = async () => {
+    if (!selectedIds.size) return
+    const ids = [...selectedIds]
+    setRemovingBulk(true)
+    let removed = 0
+    for (const id of ids) {
+      try {
+        await removeMutation.mutateAsync(id)
+        removed++
+      } catch {
+        // keep going through the rest
+      }
+    }
+    setRemovingBulk(false)
+    setSelectedIds(new Set())
+    setSelectionMode(false)
+    if (removed) toast.success(`${removed} topic${removed !== 1 ? 's' : ''} removed`)
+    else toast.error('Nothing was removed')
+  }
+
+  const handleAdd = async (topic: string, channelSlug?: string, contentType?: string, scheduledDate?: string) => {
     try {
       const payload = contentType ? { content_type: contentType } : undefined
-      await addMutation.mutateAsync({
+      const res = await addMutation.mutateAsync({
         topic,
         channelSlug: channelSlug || filterSlug || undefined,
         contentType,
         payload,
+        scheduledDate: scheduledDate ? new Date(scheduledDate).toISOString() : undefined,
       })
       setShowAddForm(false)
-      toast.success(`"${topic}" added to queue`)
+      if (res?.duplicate) {
+        toast.info(
+          res.existing_status === 'in_queue'
+            ? `"${topic}" is already in the queue`
+            : `"${topic}" was already produced — use History → Re-add to run it again`,
+          5000,
+        )
+      } else {
+        toast.success(`"${topic}" added to the end of the queue`)
+      }
     } catch {
       toast.error('Failed to add topic')
     }
@@ -526,21 +647,31 @@ export default function QueuePage() {
 
   const handleBulkAdd = async (topics: string[], channelSlug?: string, contentType?: string) => {
     let added = 0
+    let skipped = 0
     const payload = contentType ? { content_type: contentType } : undefined
     for (const topic of topics) {
       try {
-        await addMutation.mutateAsync({
+        const res = await addMutation.mutateAsync({
           topic,
           channelSlug: channelSlug || filterSlug || undefined,
           contentType,
           payload,
         })
-        added++
+        if (res?.duplicate) skipped++
+        else added++
       } catch {
         // skip failed topics
       }
     }
-    toast.success(`${added} topic${added !== 1 ? 's' : ''} added to queue`)
+    if (added && skipped) {
+      toast.info(`${added} added · ${skipped} skipped as duplicates`)
+    } else if (added) {
+      toast.success(`${added} topic${added !== 1 ? 's' : ''} added to the end of the queue`)
+    } else if (skipped) {
+      toast.info(`${skipped} topic${skipped !== 1 ? 's' : ''} were duplicates, so nothing was added`)
+    } else {
+      toast.error('No topics added')
+    }
   }
 
   const handleRunNow = async (item: QueueItem) => {
@@ -631,7 +762,7 @@ export default function QueuePage() {
   }
 
   // ── Empty state ──────────────────────────────────────────────────────────────
-  if (!isLoading && items.length === 0 && !showAddForm) {
+  if (emptyStateOpen) {
     return (
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
@@ -661,6 +792,12 @@ export default function QueuePage() {
               <AlignLeft size={13} strokeWidth={1.5} /> Bulk Add
             </button>
             <button
+              onClick={() => setShowAiModal(true)}
+              className="flex items-center gap-1.5 h-8 px-3 text-[12px] font-medium border border-[#E5E5E5] text-[#525252] rounded hover:bg-[#F5F5F5] transition-colors"
+            >
+              <Sparkles size={13} strokeWidth={1.5} /> AI Ideas
+            </button>
+            <button
               onClick={() => setShowAddForm(true)}
               className="flex items-center gap-1.5 h-8 px-3 text-[12px] font-medium bg-[#0A0A0A] text-white rounded hover:bg-[#262626] transition-colors"
             >
@@ -687,6 +824,12 @@ export default function QueuePage() {
               className="mt-2 text-[12px] font-medium text-[#0A0A0A] underline underline-offset-2 hover:text-[#525252] transition-colors"
             >
               Add your first topic →
+            </button>
+            <button
+              onClick={() => setView('history')}
+              className="mt-1 text-[12px] font-medium text-[#A3A3A3] underline underline-offset-2 hover:text-[#525252] transition-colors"
+            >
+              View history →
             </button>
           </div>
         </div>
@@ -760,10 +903,27 @@ export default function QueuePage() {
               </select>
             )}
             <button
+              onClick={toggleSelectionMode}
+              className={`flex items-center gap-1.5 h-8 px-3 text-[12px] font-medium rounded transition-colors ${
+                selectionMode
+                  ? 'bg-[#0A0A0A] text-white hover:bg-[#262626]'
+                  : 'border border-[#E5E5E5] text-[#525252] hover:bg-[#F5F5F5]'
+              }`}
+            >
+              {selectionMode ? <X size={13} strokeWidth={1.5} /> : <ListChecks size={13} strokeWidth={1.5} />}
+              {selectionMode ? 'Cancel' : 'Select'}
+            </button>
+            <button
               onClick={() => setShowBulkModal(true)}
               className="flex items-center gap-1.5 h-8 px-3 text-[12px] font-medium border border-[#E5E5E5] text-[#525252] rounded hover:bg-[#F5F5F5] transition-colors"
             >
               <AlignLeft size={13} strokeWidth={1.5} /> Bulk Add
+            </button>
+            <button
+              onClick={() => setShowAiModal(true)}
+              className="flex items-center gap-1.5 h-8 px-3 text-[12px] font-medium border border-[#E5E5E5] text-[#525252] rounded hover:bg-[#F5F5F5] transition-colors"
+            >
+              <Sparkles size={13} strokeWidth={1.5} /> AI Ideas
             </button>
             <button
               onClick={() => setShowAddForm(true)}
@@ -774,8 +934,53 @@ export default function QueuePage() {
           </div>
         </div>
 
+      {/* Queue / History tabs */}
+      <div className="flex items-center gap-1 p-0.5 bg-[#F5F5F5] rounded w-fit mb-4">
+        <button
+          onClick={() => setView('queue')}
+          className={`flex items-center gap-1.5 h-7 px-3 text-[12px] font-medium rounded transition-colors ${view === 'queue' ? 'bg-white text-[#0A0A0A] shadow-sm' : 'text-[#A3A3A3] hover:text-[#525252]'}`}
+        >
+          <ListOrdered size={12} strokeWidth={1.5} /> Queue
+        </button>
+        <button
+          onClick={() => setView('history')}
+          className={`flex items-center gap-1.5 h-7 px-3 text-[12px] font-medium rounded transition-colors ${view === 'history' ? 'bg-white text-[#0A0A0A] shadow-sm' : 'text-[#A3A3A3] hover:text-[#525252]'}`}
+        >
+          <History size={12} strokeWidth={1.5} /> History
+        </button>
+      </div>
+
+      {/* Bulk selection bar */}
+      {view === 'queue' && selectionMode && items.length > 0 && (
+        <div className="flex items-center justify-between px-3 py-2 mb-4 bg-[#0A0A0A] text-white rounded-lg">
+          <span className="text-[12px] font-medium">{selectedIds.size} selected</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={selectAll}
+              className="h-7 px-2.5 text-[11px] font-medium text-white/80 hover:text-white transition-colors"
+            >
+              Select all
+            </button>
+            <button
+              onClick={toggleSelectionMode}
+              className="h-7 px-2.5 text-[11px] font-medium text-white/80 hover:text-white transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleBulkRemove}
+              disabled={removingBulk || selectedIds.size === 0}
+              className="h-7 px-2.5 text-[11px] font-semibold bg-[#DC2626] text-white rounded hover:bg-[#B91C1C] disabled:opacity-50 flex items-center gap-1 transition-colors"
+            >
+              {removingBulk ? <Loader2 size={11} strokeWidth={1.5} className="animate-spin" /> : <Trash2 size={11} strokeWidth={1.5} />}
+              Delete selected
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Run Next banner */}
-      {items.length > 0 && (
+      {view === 'queue' && !selectionMode && items.length > 0 && (
         <div className="flex items-center gap-3 px-4 py-2.5 mb-4 bg-[#0A0A0A] text-white rounded-lg">
           <button
             onClick={handleRunNext}
@@ -798,6 +1003,7 @@ export default function QueuePage() {
       )}
 
       {/* Queue list */}
+      {view === 'queue' && (
       <div className="border border-[#E5E5E5] rounded-lg overflow-hidden bg-white">
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
@@ -812,6 +1018,10 @@ export default function QueuePage() {
                   onSchedule={openScheduler}
                   removing={removingId}
                   runningId={runningId}
+                  flash={flashing.has(item.id)}
+                  selectable={selectionMode}
+                  selected={selectedIds.has(item.id)}
+                  onToggleSelect={toggleSelect}
                 />
 
                 {/* Add-to-calendar editor, inline under the row */}
@@ -871,11 +1081,27 @@ export default function QueuePage() {
           />
         )}
       </div>
+      )}
 
-      {/* Hint + bulk modal */}
-      <p className="text-[11px] text-[#A3A3A3] mt-3">
-        Drag rows to reorder · Click Run to start the pipeline immediately
-      </p>
+      {/* History tab */}
+      {view === 'history' && (
+        <HistoryPanel channels={channels} defaultChannelSlug={filterSlug || undefined} />
+      )}
+
+      {/* Hint */}
+      {view === 'queue' && (
+        <p className="text-[11px] text-[#A3A3A3] mt-3">
+          New topics are added to the end of the queue · Drag rows to reorder · Run to start now
+        </p>
+      )}
+
+      {showAiModal && (
+        <AIIdeasModal
+          channels={channels}
+          defaultChannelSlug={filterSlug || undefined}
+          onClose={() => setShowAiModal(false)}
+        />
+      )}
 
       {showBulkModal && (
         <BulkAddModal

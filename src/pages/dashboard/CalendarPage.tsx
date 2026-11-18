@@ -403,7 +403,7 @@ export default function CalendarPage() {
     if (!addingToDay) return
     setAddingLoading(true)
     try {
-      await queueApi.add(topic, channelSlug || undefined, addingToDay)
+      await queueApi.add(topic, channelSlug || undefined, addingToDay, undefined, undefined, false)
       qc.invalidateQueries({ queryKey: ['calendar-events'], exact: false })
       qc.invalidateQueries({ queryKey: ['queue'], exact: false })
       setAddingToDay(null)

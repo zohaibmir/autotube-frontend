@@ -53,6 +53,13 @@ function SectionCard({ title, children }: { title: string; children: React.React
 // "english" -> "English". The API returns canonical lowercase keys.
 const _langLabel = (id: string) => id.charAt(0).toUpperCase() + id.slice(1)
 
+// `default_visual_source` has two historical spellings of the same choice — 'pexels' (migration 015) and
+// 'stock'. The backend normalises 'pexels' -> 'stock' on read, but keep a defensive normalisation here
+// too, so a stale value can never leave the selector with no active option.
+const _visualSourceIds = ['stock', 'custom_video', 'ai_image'] as const
+const _normalizeVisualSource = (v: string | null | undefined): string =>
+  (_visualSourceIds as readonly string[]).includes(v as string) ? (v as string) : 'stock'
+
 const _ART_STYLE_OPTIONS = [
   { id: 'anime',          label: 'Anime Dream',      bestFor: 'anime, fantasy & action' },
   { id: 'comic',          label: 'Comic Pop',        bestFor: 'bold storytelling & drama' },
@@ -110,7 +117,7 @@ function VideoDefaultsPanel({ slug }: { slug: string }) {
   })
 
   if (!isLoading && !hydrated && data) {
-    setVisualSource(profile.default_visual_source || 'stock')
+    setVisualSource(_normalizeVisualSource(profile.default_visual_source))
     setArtStyle(profile.default_art_style || '')
     setImageProvider(profile.default_image_provider || '')
     setCaptionsEnabled(profile.captions_enabled !== false)

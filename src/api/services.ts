@@ -348,8 +348,8 @@ export const queueApi = {
     return response.data.items ?? []
   },
 
-  // POST /api/queue/add  { topic, channel_slug?, scheduled_date?, content_type?, payload? }
-  add: async (topic: string, channelSlug?: string, scheduledDate?: string, contentType?: string, payload?: Record<string, unknown>) => {
+  // POST /api/queue/add  { topic, channel_slug?, scheduled_date?, content_type?, payload?, dedupe? }
+  add: async (topic: string, channelSlug?: string, scheduledDate?: string, contentType?: string, payload?: Record<string, unknown>, dedupe = true) => {
     // `scheduled` is a timestamptz. A bare "2026-10-18" is read as 00:00 UTC, which is the evening of the
     // 17th west of Greenwich and put the topic on the wrong calendar day. Anchor a bare date to local
     // noon instead; a full ISO instant is passed through untouched.
@@ -362,6 +362,7 @@ export const queueApi = {
       scheduled_date: scheduled,
       content_type: contentType ?? null,
       payload: payload ?? null,
+      dedupe,
     })
     return response.data
   },
@@ -375,6 +376,37 @@ export const queueApi = {
   // POST /api/queue/reorder  { ordered_ids: number[] }
   reorder: async (ids: number[]) => {
     const response = await apiClient.post('/api/queue/reorder', { ordered_ids: ids })
+    return response.data
+  },
+
+  // GET /api/queue/history?channel_slug=&status=&q=&limit=&offset=
+  history: async (params?: { channelSlug?: string; status?: string; q?: string; limit?: number; offset?: number }) => {
+    const response = await apiClient.get<{ ok: boolean; items: any[]; total?: number }>('/api/queue/history', {
+      params: {
+        ...(params?.channelSlug ? { channel_slug: params.channelSlug } : {}),
+        ...(params?.status ? { status: params.status } : {}),
+        ...(params?.q ? { q: params.q } : {}),
+        ...(params?.limit ? { limit: params.limit } : {}),
+        ...(params?.offset ? { offset: params.offset } : {}),
+      },
+    })
+    return response.data
+  },
+
+  // DELETE /api/queue/history/:id
+  deleteHistory: async (id: string | number) => {
+    const response = await apiClient.delete(`/api/queue/history/${id}`)
+    return response.data
+  },
+
+  // DELETE /api/queue/history?channel_slug=&status=
+  clearHistory: async (params?: { channelSlug?: string; status?: string }) => {
+    const response = await apiClient.delete('/api/queue/history', {
+      params: {
+        ...(params?.channelSlug ? { channel_slug: params.channelSlug } : {}),
+        ...(params?.status ? { status: params.status } : {}),
+      },
+    })
     return response.data
   },
 }
@@ -1179,6 +1211,8 @@ export const aiApi = {
     recency?: string
     content_type?: string
     count?: number
+    prompt?: string
+    dedupe?: boolean
   }) => {
     const response = await apiClient.post('/api/ai/trending', params)
     return response.data
